@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.linrtx.mc.mixin",
+  "plugin": "dev.linrtx.mc.mixin.LinRtxMixinPlugin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "GameRendererMixin",
+    "LevelRendererMixin",
+    "GlSurfaceMixin",
+    "GlSamplerMixin",
+    "SkyRendererMixin",
+    "IrisCompositeMixin",
+    "IrisColorSpaceMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

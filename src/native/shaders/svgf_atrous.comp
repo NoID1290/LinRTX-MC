@@ -1,0 +1,174 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uIrradianceTex;
+layout(set = 0, binding = 1) uniform sampler2D uDepthTex;
+layout(set = 0, binding = 2) uniform sampler2D uNormalsTex;
+layout(set = 0, binding = 3) uniform sampler2D uAlbedoTex;
+layout(set = 0, binding = 4) uniform sampler2D uOrigColorTex;
+
+layout(set = 0, binding = 5) writeonly uniform image2D uOutImg;
+
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+    int stepSize;
+    float phiColor;
+    float phiNormal;
+    float phiDepth;
+    uint hasAlbedo;
+    uint hasNormals;
+    uint normalsPacked01;
+    uint isFinalPass;
+    uint remodulateAlbedo;
+    uint preserveAlpha;
+    uint outputToSrgb;
+    uint reverseZ;
+    float nearPlane;
+    float farPlane;
+} pc;
+
+const float kKernel[3] = float[3](0.375, 0.25, 0.0625); // [3/8, 1/4, 1/16] normalized B3-spline
+
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+bool isSkyDepth(float rawDepth) {
+    return (pc.reverseZ != 0u) ? (rawDepth <= 1e-6) : (rawDepth >= 1.0 - 1e-6);
+}
+
+float linearizeDepth(float rawDepth) {
+    float n = max(pc.nearPlane, 0.01);
+    float f = max(pc.farPlane, n + 1.0);
+    float z = clamp(rawDepth, 0.0, 1.0);
+    if (pc.reverseZ != 0u) {
+        return (n * f) / max(1e-6, z * (f - n) + n);
+    }
+    return (n * f) / max(1e-6, f - z * (f - n));
+}
+
+vec3 linearToSrgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    bvec3 cutoff = lessThanEqual(c, vec3(0.0031308));
+    vec3 low = c * 12.92;
+    vec3 high = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
+    return mix(high, low, cutoff);
+}
+
+vec3 fetchNormal(ivec2 coord, ivec2 maxC) {
+    if (pc.hasNormals != 0u) {
+        vec3 n = texelFetch(uNormalsTex, clamp(coord, ivec2(0), maxC), 0).xyz;
+        if (pc.normalsPacked01 != 0u) {
+            n = n * 2.0 - 1.0;
+        }
+        float len2 = dot(n, n);
+        if (len2 > 1e-6 && !isnan(len2) && !isinf(len2)) {
+            return n * inversesqrt(len2);
+        }
+    }
+    float zc = linearizeDepth(texelFetch(uDepthTex, clamp(coord, ivec2(0), maxC), 0).r);
+    float zr = linearizeDepth(texelFetch(uDepthTex, clamp(coord + ivec2(1, 0), ivec2(0), maxC), 0).r);
+    float zu = linearizeDepth(texelFetch(uDepthTex, clamp(coord + ivec2(0, 1), ivec2(0), maxC), 0).r);
+    return normalize(vec3(-(zr - zc), -(zu - zc), max(0.02, zc * 0.01)));
+}
+
+float filterVariance3x3(ivec2 coord, ivec2 maxC) {
+    float sum = 0.0;
+    const float w[3] = float[3](0.25, 0.125, 0.0625);
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            float v = texelFetch(uIrradianceTex, clamp(coord + ivec2(dx, dy), ivec2(0), maxC), 0).a;
+            sum += max(0.0, v) * w[abs(dx) + abs(dy)];
+        }
+    }
+    return sum;
+}
+
+vec3 finishColor(vec3 irr, ivec2 ipx) {
+    if (pc.hasAlbedo != 0u && pc.remodulateAlbedo != 0u) {
+        vec3 alb = max(texelFetch(uAlbedoTex, ipx, 0).rgb, vec3(0.0));
+        irr *= alb;
+    }
+    if (pc.outputToSrgb != 0u) {
+        irr = linearToSrgb(irr);
+    }
+    return clamp(irr, vec3(0.0), vec3(65504.0));
+}
+
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= pc.width || px.y >= pc.height) return;
+
+    ivec2 ipx = ivec2(px);
+    ivec2 maxC = ivec2(pc.width - 1u, pc.height - 1u);
+
+    vec4 orig = texelFetch(uOrigColorTex, ipx, 0);
+    vec4 centerData = texelFetch(uIrradianceTex, ipx, 0);
+    float rawDepthP = texelFetch(uDepthTex, ipx, 0).r;
+
+    if (isSkyDepth(rawDepthP)) {
+        if (pc.isFinalPass != 0u) {
+            imageStore(uOutImg, ipx, orig);
+        } else {
+            imageStore(uOutImg, ipx, vec4(centerData.rgb, 0.0));
+        }
+        return;
+    }
+
+    float zP = linearizeDepth(rawDepthP);
+    float zr = linearizeDepth(texelFetch(uDepthTex, clamp(ipx + ivec2(1, 0), ivec2(0), maxC), 0).r);
+    float zu = linearizeDepth(texelFetch(uDepthTex, clamp(ipx + ivec2(0, 1), ivec2(0), maxC), 0).r);
+    float dz = max(max(abs(zr - zP), abs(zu - zP)), zP * 0.002);
+
+    vec3 nP = fetchNormal(ipx, maxC);
+    float lumaP = luminance(centerData.rgb);
+    float varP = filterVariance3x3(ipx, maxC);
+    float sigmaL = pc.phiColor * sqrt(max(1e-6, varP)) + 1e-4;
+
+    vec3 sumColor = centerData.rgb;
+    float sumVar = centerData.a;
+    float sumWeight = 1.0;
+    float sumWeightSq = 1.0;
+
+    int step = max(1, pc.stepSize);
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            ivec2 q = ipx + ivec2(dx, dy) * step;
+            if (q.x < 0 || q.y < 0 || q.x > maxC.x || q.y > maxC.y) continue;
+
+            float rawDepthQ = texelFetch(uDepthTex, q, 0).r;
+            if (isSkyDepth(rawDepthQ)) continue;
+
+            float zQ = linearizeDepth(rawDepthQ);
+            float wDepth = exp(-abs(zP - zQ) / (pc.phiDepth * dz * float(step) + 1e-3));
+
+            vec3 nQ = fetchNormal(q, maxC);
+            float wNormal = pow(max(0.0, dot(nP, nQ)), pc.phiNormal);
+
+            vec4 sampleQ = texelFetch(uIrradianceTex, q, 0);
+            float lumaQ = luminance(sampleQ.rgb);
+            float wLuma = exp(-abs(lumaP - lumaQ) / sigmaL);
+
+            float kernelW = kKernel[abs(dx)] * kKernel[abs(dy)];
+            float w = kernelW * wDepth * wNormal * wLuma;
+
+            sumColor += sampleQ.rgb * w;
+            sumVar += max(0.0, sampleQ.a) * (w * w);
+            sumWeight += w;
+            sumWeightSq += w * w;
+        }
+    }
+
+    vec3 filteredIrr = sumColor / max(sumWeight, 1e-5);
+    float filteredVar = sumVar / max(sumWeight * sumWeight, 1e-5);
+
+    if (pc.isFinalPass != 0u) {
+        vec3 outRgb = finishColor(filteredIrr, ipx);
+        float outA = (pc.preserveAlpha != 0u) ? orig.a : 1.0;
+        imageStore(uOutImg, ipx, vec4(outRgb, outA));
+    } else {
+        imageStore(uOutImg, ipx, vec4(clamp(filteredIrr, vec3(0.0), vec3(65504.0)), filteredVar));
+    }
+}

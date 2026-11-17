@@ -1,0 +1,81 @@
+# =============================================================================
+# LinRTX-MC — Git Ignore Rules
+# =============================================================================
+
+# --- Gradle & Fabric Loom ---
+/.gradle/
+/build/
+/out/
+/bin/
+!gradle/wrapper/gradle-wrapper.jar
+
+# --- Native C++ / CMake Build Artifacts ---
+/build-native/
+/cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+Makefile
+compile_commands.json
+/src/native/generated/
+*.o
+*.obj
+*.spv
+
+# --- Staged Native Binaries & Large NVIDIA NGX Runtime Blobs ---
+# Note: third_party/nvidia-dlss/lib/libnvsdk_ngx.a (87 KB static stub) and SDK
+# headers remain tracked so CMake compiles out of the box.
+/src/main/resources/natives/
+/third_party/nvidia-dlss/lib/*.so
+/third_party/nvidia-dlss/lib/*.so.*
+*.so
+*.so.*
+*.dll
+*.dylib
+
+# --- Minecraft Runtime, Logs & Local User Config ---
+/run/
+/logs/
+/crash-reports/
+/config/
+/linrtx-ngx/
+*.log
+*.log.gz
+hs_err_pid*.log
+replay_pid*.log
+fabric_loader_dependencies.json
+
+# --- IDEs & Editors ---
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+.factorypath
+.apt_generated/
+.apt_generated_tests/
+
+# --- Secrets, Keys & Local Environment Overrides ---
+.env
+.env.*
+local.properties
+*.jks
+*.keystore
+*.pem
+*.key
+*.p12
+*.pfx
+
+# --- OS & Temporary Files ---
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+*.bak
+*.tmp

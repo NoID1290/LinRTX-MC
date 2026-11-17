@@ -1,0 +1,8 @@
+{
+  "key.category.linrtx.main": "LinRTX (DLSS 4.5 / FG / RTX HDR)",
+  "key.linrtx.open_menu": "Open LinRTX Settings (Live Presets)",
+  "key.linrtx.cycle_preset": "Cycle DLSS 4.5 Preset (J/K/L/M)",
+  "key.linrtx.toggle_overlay": "Toggle LinRTX Status Overlay",
+  "linrtx.title": "LinRTX — Native Linux DLSS 4.5, Frame Gen & RTX HDR",
+  "linrtx.sodium.page": "LinRTX"
+}

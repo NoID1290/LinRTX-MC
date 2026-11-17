@@ -1,0 +1,134 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uColorTex;
+layout(set = 0, binding = 1) uniform sampler2D uDepthTex;
+layout(set = 0, binding = 2) uniform sampler2D uExplicitAlbedoTex;
+layout(set = 0, binding = 3) uniform sampler2D uExplicitNormalsTex;
+
+layout(set = 0, binding = 4) writeonly uniform image2D uOutDiffuseAlbedo;
+layout(set = 0, binding = 5) writeonly uniform image2D uOutSpecularAlbedo;
+layout(set = 0, binding = 6) writeonly uniform image2D uOutNormals;
+layout(set = 0, binding = 7) writeonly uniform image2D uOutRoughness;
+
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+    uint hasExplicitAlbedo;
+    uint hasExplicitNormals;
+    uint normalsAreWorld;
+    uint normalsPacked01;
+    uint reverseZ;
+    uint inputIsSrgb;
+    float nearPlane;
+    float farPlane;
+    float invProjX;   // abs(clipToView[0][0]) = aspect * tanHalfFov
+    float invProjY;   // abs(clipToView[1][1]) = tanHalfFov
+    vec4 viewRow0;    // row 0 of world->view (camera right)
+    vec4 viewRow1;    // row 1 of world->view (camera up)
+    vec4 viewRow2;    // row 2 of world->view (-camera forward)
+} pc;
+
+vec3 srgbToLinear(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+    vec3 low = c / 12.92;
+    vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(high, low, cutoff);
+}
+
+bool isSkyDepth(float rawDepth) {
+    return (pc.reverseZ != 0u) ? (rawDepth <= 1e-6) : (rawDepth >= 1.0 - 1e-6);
+}
+
+float linearizeDepth(float rawDepth) {
+    float n = max(pc.nearPlane, 0.01);
+    float f = max(pc.farPlane, n + 1.0);
+    float z = clamp(rawDepth, 0.0, 1.0);
+    if (pc.reverseZ != 0u) {
+        return (n * f) / max(1e-6, z * (f - n) + n);
+    }
+    return (n * f) / max(1e-6, f - z * (f - n));
+}
+
+vec3 viewPosAt(ivec2 coord, ivec2 maxC) {
+    ivec2 c = clamp(coord, ivec2(0), maxC);
+    vec2 uv = (vec2(c) + 0.5) / vec2(pc.width, pc.height);
+    // Vulkan top-left -> view XY (Y up in right-handed view space)
+    vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    float zView = linearizeDepth(texelFetch(uDepthTex, c, 0).r);
+    return vec3(ndc.x * pc.invProjX * zView, ndc.y * pc.invProjY * zView, -zView);
+}
+
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= pc.width || px.y >= pc.height) return;
+
+    ivec2 ipx = ivec2(px);
+    ivec2 maxC = ivec2(pc.width - 1u, pc.height - 1u);
+
+    vec3 color = max(texelFetch(uColorTex, ipx, 0).rgb, vec3(0.0));
+    vec3 linColor = (pc.inputIsSrgb != 0u) ? srgbToLinear(color) : color;
+    float rawDepth = texelFetch(uDepthTex, ipx, 0).r;
+    bool sky = isSkyDepth(rawDepth);
+
+    // 1. Diffuse albedo
+    vec3 albedo;
+    if (pc.hasExplicitAlbedo != 0u) {
+        albedo = clamp(texelFetch(uExplicitAlbedoTex, ipx, 0).rgb, 0.0, 1.0);
+    } else {
+        float lum = dot(linColor, vec3(0.2126, 0.7152, 0.0722));
+        vec3 tonemapped = linColor / max(1e-4, 1.0 + lum * 0.35);
+        albedo = clamp(tonemapped, 0.02, 1.0);
+    }
+
+    // 2. View-space normal & Camellia surface hint
+    vec3 viewNormal = vec3(0.0, 0.0, 1.0);
+    float surfaceFlag = 1.0;
+    if (!sky) {
+        if (pc.hasExplicitNormals != 0u) {
+            vec4 nSample = texelFetch(uExplicitNormalsTex, ipx, 0);
+            surfaceFlag = nSample.w;
+            vec3 n = nSample.xyz;
+            if (pc.normalsPacked01 != 0u) {
+                n = n * 2.0 - 1.0;
+            }
+            if (pc.normalsAreWorld != 0u) {
+                n = vec3(dot(pc.viewRow0.xyz, n), dot(pc.viewRow1.xyz, n), dot(pc.viewRow2.xyz, n));
+            }
+            float len2 = dot(n, n);
+            viewNormal = (len2 > 1e-6) ? (n * inversesqrt(len2)) : vec3(0.0, 0.0, 1.0);
+        } else {
+            vec3 pC = viewPosAt(ipx, maxC);
+            vec3 pR = viewPosAt(ipx + ivec2(1, 0), maxC);
+            vec3 pL = viewPosAt(ipx - ivec2(1, 0), maxC);
+            vec3 pU = viewPosAt(ipx - ivec2(0, 1), maxC);
+            vec3 pD = viewPosAt(ipx + ivec2(0, 1), maxC);
+            vec3 dx = (abs(pR.z - pC.z) < abs(pC.z - pL.z)) ? (pR - pC) : (pC - pL);
+            vec3 dy = (abs(pU.z - pC.z) < abs(pC.z - pD.z)) ? (pC - pU) : (pD - pC);
+            vec3 n = cross(dx, dy);
+            float len2 = dot(n, n);
+            viewNormal = (len2 > 1e-10) ? (n * inversesqrt(len2)) : vec3(0.0, 0.0, 1.0);
+            if (viewNormal.z < 0.0) {
+                viewNormal = -viewNormal;
+            }
+        }
+    }
+
+    // 3. Synthetic specular albedo & roughness calibrated for water vs terrain
+    bool isWater = (pc.hasExplicitNormals != 0u && surfaceFlag > 1.5);
+    vec3 cR = max(texelFetch(uColorTex, clamp(ipx + ivec2(1, 0), ivec2(0), maxC), 0).rgb, vec3(0.0));
+    vec3 cD = max(texelFetch(uColorTex, clamp(ipx + ivec2(0, 1), ivec2(0), maxC), 0).rgb, vec3(0.0));
+    float lC = dot(linColor, vec3(0.2126, 0.7152, 0.0722));
+    float lR = dot((pc.inputIsSrgb != 0u) ? srgbToLinear(cR) : cR, vec3(0.2126, 0.7152, 0.0722));
+    float lD = dot((pc.inputIsSrgb != 0u) ? srgbToLinear(cD) : cD, vec3(0.2126, 0.7152, 0.0722));
+    float detail = clamp((abs(lR - lC) + abs(lD - lC)) * 4.0, 0.0, 1.0);
+
+    vec3 specAlbedo = isWater ? vec3(0.025) : mix(vec3(0.04), max(vec3(0.04), albedo * 0.25), 1.0 - detail);
+    float roughness = sky ? 1.0 : (isWater ? 0.06 : mix(0.45, 0.90, detail));
+
+    imageStore(uOutDiffuseAlbedo, ipx, vec4(albedo, 1.0));
+    imageStore(uOutSpecularAlbedo, ipx, vec4(specAlbedo, 1.0));
+    imageStore(uOutNormals, ipx, vec4(viewNormal, roughness));
+    imageStore(uOutRoughness, ipx, vec4(roughness, 0.0, 0.0, 1.0));
+}
