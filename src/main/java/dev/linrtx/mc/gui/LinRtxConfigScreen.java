@@ -27,6 +27,7 @@ public final class LinRtxConfigScreen extends Screen {
     private enum Tab {
         PROFILES("Profiles"),
         DLSS("DLSS 4.5"),
+        NEURAL("DLSS 5"),
         DENOISE_RR("Denoise & RR"),
         FRAME_GEN("Frame Gen"),
         RTX_HDR("RTX HDR");
@@ -77,6 +78,7 @@ public final class LinRtxConfigScreen extends Screen {
         switch (activeTab) {
             case PROFILES -> buildProfilesTab(cfg, contentY);
             case DLSS -> buildDlssTab(cfg, contentY);
+            case NEURAL -> buildNeuralTab(cfg, contentY);
             case DENOISE_RR -> buildDenoiseRrTab(cfg, contentY);
             case FRAME_GEN -> buildFrameGenTab(cfg, contentY);
             case RTX_HDR -> buildHdrTab(cfg, contentY);
@@ -100,6 +102,18 @@ public final class LinRtxConfigScreen extends Screen {
             cfg.denoiseTemporalBlend = 0.88f;
             cfg.denoiseStrength = 1.0f;
             cfg.denoiseAtrousPasses = 4;
+            cfg.f1AccumFadeSamples = 48;
+            cfg.neuralMode = NeuralEngineMode.OFF;
+            cfg.neuralStyle = NeuralStyle.DEFAULT;
+            cfg.neuralPreset = NeuralPreset.AUTO;
+            cfg.neuralPlacement = NeuralPlacement.POST_SR;
+            cfg.neuralUnlockAnyRtx = true;
+            cfg.neuralUseAutoMask = true;
+            cfg.neuralWorkingScale = 1.0f;
+            cfg.neuralIntensity = 0.75f;
+            cfg.neuralLocalToneStrength = 1.0f;
+            cfg.neuralLocalStructureStrength = 1.0f;
+            cfg.neuralSkinStructureStrength = -1.0f;
             cfg.save();
             LinRtxPipeline.get().requestHistoryReset();
             this.rebuildWidgets();
@@ -119,8 +133,8 @@ public final class LinRtxConfigScreen extends Screen {
                 LinRtxPipeline.get().requestHistoryReset();
                 LinRtxHudOverlay.showToast("LinRTX Profile -> " + bundle.name());
                 this.rebuildWidgets();
-            }).bounds(panelX + 12, y, colW, 20).build());
-            y += 24;
+            }).bounds(panelX + 12, y, colW, 19).build());
+            y += 22;
         }
     }
 
@@ -340,6 +354,134 @@ public final class LinRtxConfigScreen extends Screen {
         ));
     }
 
+    private void buildNeuralTab(LinRtxConfig cfg, int yStart) {
+        int leftX = panelX + 12;
+        int fullW = panelW - 24;
+        int halfW = (fullW - 8) / 2;
+        int rightX = leftX + halfW + 8;
+
+        // Row 1: Neural Engine Mode & Any-RTX Card Unlock
+        addRenderableWidget(Button.builder(
+            Component.literal("Engine: " + cfg.neuralMode.displayName),
+            b -> {
+                cfg.neuralMode = nextEnum(cfg.neuralMode);
+                cfg.save();
+                LinRtxPipeline.get().requestHistoryReset();
+                this.rebuildWidgets();
+            }).bounds(leftX, yStart, halfW, 20)
+            .tooltip(Tooltip.create(Component.literal(
+                "Selects DLSS 5 Neural Engine Filter backend (NGX Feature 18 or Vulkan Neural Compute).")))
+            .build());
+
+        addRenderableWidget(Button.builder(
+            Component.literal("Any-RTX Unlock: " + (cfg.neuralUnlockAnyRtx ? "ON (20/30/40/50)" : "OFF")),
+            b -> {
+                cfg.neuralUnlockAnyRtx = !cfg.neuralUnlockAnyRtx;
+                cfg.save();
+                LinRtxPipeline.get().requestHistoryReset();
+                this.rebuildWidgets();
+            }).bounds(rightX, yStart, halfW, 20)
+            .tooltip(Tooltip.create(Component.literal(
+                "Unlocks DLSS 5 Neural Engine across RTX 20/30/40/50 (NGX arch hints + Vulkan Neural Engine).")))
+            .build());
+
+        // Row 2: 1-Click Style Buttons (Default / Natural / Cinematic)
+        NeuralStyle[] styles = NeuralStyle.values();
+        int gap = 4;
+        int sw = (fullW - gap * (styles.length - 1)) / styles.length;
+        int styleY = yStart + 35;
+        for (int i = 0; i < styles.length; i++) {
+            NeuralStyle st = styles[i];
+            String tag = (st == cfg.neuralStyle ? "* " : "") + "Style: " + st.displayName;
+            Button sBtn = Button.builder(Component.literal(tag), b -> {
+                cfg.neuralStyle = st;
+                cfg.save();
+                LinRtxHudOverlay.showToast("LinRTX DLSS 5 Style -> " + st.displayName);
+                this.rebuildWidgets();
+            }).bounds(leftX + i * (sw + gap), styleY, sw, 20).build();
+            sBtn.active = (st != cfg.neuralStyle);
+            addRenderableWidget(sBtn);
+        }
+
+        // Row 3: Pipeline Placement & Model Preset
+        int row3Y = yStart + 59;
+        addRenderableWidget(Button.builder(
+            Component.literal("Placement: " + cfg.neuralPlacement.displayName),
+            b -> {
+                cfg.neuralPlacement = nextEnum(cfg.neuralPlacement);
+                cfg.save();
+                LinRtxPipeline.get().requestHistoryReset();
+                this.rebuildWidgets();
+            }).bounds(leftX, row3Y, halfW, 20)
+            .tooltip(Tooltip.create(Component.literal(
+                "Post-SR runs on display-res world pre-HUD; Pre-SR runs at render resolution before DLSS-SR.")))
+            .build());
+
+        addRenderableWidget(Button.builder(
+            Component.literal("Model Preset: " + cfg.neuralPreset.displayName),
+            b -> {
+                cfg.neuralPreset = nextEnum(cfg.neuralPreset);
+                cfg.save();
+                LinRtxPipeline.get().requestHistoryReset();
+                this.rebuildWidgets();
+            }).bounds(rightX, row3Y, halfW, 20)
+            .tooltip(Tooltip.create(Component.literal(
+                "DLSSNR.Hint.Render.Preset: Auto, Quality (HT / 5x5), or Small FP8 (3x3 Fast).")))
+            .build());
+
+        // Row 4: Intensity & Working Scale (Cost Scaler)
+        int row4Y = yStart + 84;
+        addRenderableWidget(new ParamSlider(
+            leftX, row4Y, halfW, 20, 0.0, 2.0, cfg.neuralIntensity,
+            v -> String.format(Locale.ROOT, "Intensity: %d%%", Math.round(v * 100.0)),
+            v -> { cfg.neuralIntensity = v.floatValue(); cfg.save(); }
+        ));
+        addRenderableWidget(new ParamSlider(
+            rightX, row4Y, halfW, 20, 0.50, 1.00, cfg.neuralWorkingScale,
+            v -> String.format(Locale.ROOT, "Working Scale: %.2fx", v),
+            v -> { cfg.neuralWorkingScale = v.floatValue(); cfg.save(); }
+        ));
+
+        // Row 5: Local Tone Strength & Local Structure Strength
+        int row5Y = yStart + 108;
+        addRenderableWidget(new ParamSlider(
+            leftX, row5Y, halfW, 20, 0.0, 2.0, cfg.neuralLocalToneStrength,
+            v -> String.format(Locale.ROOT, "Local Tone: %d%%", Math.round(v * 100.0)),
+            v -> { cfg.neuralLocalToneStrength = v.floatValue(); cfg.save(); }
+        ));
+        addRenderableWidget(new ParamSlider(
+            rightX, row5Y, halfW, 20, 0.0, 2.0, cfg.neuralLocalStructureStrength,
+            v -> String.format(Locale.ROOT, "Local Struct: %d%%", Math.round(v * 100.0)),
+            v -> { cfg.neuralLocalStructureStrength = v.floatValue(); cfg.save(); }
+        ));
+
+        // Row 6: Skin Structure Strength & Auto Mask
+        int row6Y = yStart + 132;
+        double initialSkinSlider = (cfg.neuralSkinStructureStrength < -0.5f)
+            ? -0.25
+            : cfg.neuralSkinStructureStrength;
+        addRenderableWidget(new ParamSlider(
+            leftX, row6Y, halfW, 20, -0.25, 2.0, initialSkinSlider,
+            v -> (v < 0.0)
+                ? "Skin Struct: Auto"
+                : String.format(Locale.ROOT, "Skin Struct: %d%%", Math.round(v * 100.0)),
+            v -> {
+                cfg.neuralSkinStructureStrength = (v < 0.0) ? -1.0f : v.floatValue();
+                cfg.save();
+            }
+        ));
+        addRenderableWidget(Button.builder(
+            Component.literal("Auto Mask (Skin/Sky): " + (cfg.neuralUseAutoMask ? "ON" : "OFF")),
+            b -> {
+                cfg.neuralUseAutoMask = !cfg.neuralUseAutoMask;
+                cfg.save();
+                this.rebuildWidgets();
+            }).bounds(rightX, row6Y, halfW, 20)
+            .tooltip(Tooltip.create(Component.literal(
+                "Enables DLSSNR.UseAutoMask heuristic protection for sky gradients, motion edges, and skin tones.")))
+            .build());
+    }
+
     private void buildDenoiseRrTab(LinRtxConfig cfg, int yStart) {
         int leftX = panelX + 12;
         int fullW = panelW - 24;
@@ -392,17 +534,17 @@ public final class LinRtxConfigScreen extends Screen {
             addRenderableWidget(pBtn);
         }
 
-        // Row 3: Pre-Tonemap Iris SVGF & G-Buffer Guide Source
+        // Row 3: Pre-Tonemap Path-Tracing Denoise/RR & G-Buffer Guide Source
         int gy = yStart + 60;
         addRenderableWidget(Button.builder(
-            Component.literal("Pre-Tonemap Iris SVGF: " + (cfg.preTonemapIrisDenoise ? "ON" : "OFF")),
+            Component.literal("Pre-Tonemap PT: " + (cfg.preTonemapIrisDenoise ? "ON" : "OFF")),
             b -> {
                 cfg.preTonemapIrisDenoise = !cfg.preTonemapIrisDenoise;
                 cfg.save();
                 LinRtxPipeline.get().requestHistoryReset();
                 this.rebuildWidgets();
             }).bounds(leftX, gy, halfW, 20)
-            .tooltip(Tooltip.create(Component.literal("Denoises linear HDR colortex5 (e.g. Camellia PT) before Bloom & AgX when DLSS-RR is inactive.")))
+            .tooltip(Tooltip.create(Component.literal("Runs Pre-Tonemap DLSS-RR / SVGF directly on linear HDR colortex5 (e.g. Camellia PT) before Bloom & AgX.")))
             .build());
 
         addRenderableWidget(Button.builder(
@@ -439,6 +581,19 @@ public final class LinRtxConfigScreen extends Screen {
             Component.literal("Reset Denoiser History"),
             b -> LinRtxPipeline.get().requestHistoryReset()
         ).bounds(rightX, ay, halfW, 20).build());
+
+        // Row 6: Camellia F1 Progressive Accumulation Target
+        int fy = yStart + 132;
+        addRenderableWidget(new ParamSlider(
+            leftX, fy, fullW, 20, 0, 256, cfg.f1AccumFadeSamples,
+            v -> {
+                int spp = (int) Math.round(v);
+                return (spp <= 1)
+                    ? "F1 Screenshot Accum Blend: Always 100% Denoised"
+                    : ("F1 Screenshot Accum Target: " + spp + " SPP (Fade Denoise -> Raw MC)");
+            },
+            v -> { cfg.f1AccumFadeSamples = (int) Math.round(v); cfg.save(); }
+        ));
     }
 
     @Override
@@ -454,6 +609,8 @@ public final class LinRtxConfigScreen extends Screen {
         LinRtxConfig cfg = LinRtxConfig.get();
         if (activeTab == Tab.DLSS) {
             gui.text(this.font, "DLSS 4.5 / 4.0 Transformer Preset (Live Switch):", panelX + 14, panelY + 80, 0xFFB8D0C0, false);
+        } else if (activeTab == Tab.NEURAL) {
+            gui.text(this.font, "DLSS 5 Neural Engine Filter Style (Default / Natural / Cinematic):", panelX + 14, panelY + 80, 0xFFB8D0C0, false);
         } else if (activeTab == Tab.DENOISE_RR) {
             gui.text(this.font, "DLSS Ray Reconstruction Preset (Live Switch):", panelX + 14, panelY + 80, 0xFFB8D0C0, false);
         } else if (activeTab == Tab.FRAME_GEN) {
@@ -468,7 +625,11 @@ public final class LinRtxConfigScreen extends Screen {
 
         LinRtxPipeline pipe = LinRtxPipeline.get();
         LinRtxNative.StatusSnapshot st = pipe.statusSnapshot();
-        String gpuLine = "GPU: " + st.gpuName() + (st.driverVersion().equals("-") ? "" : (" | Driver " + st.driverVersion()));
+        String archTag = (!st.gpuArchName().isEmpty() && !st.gpuArchName().equals("-"))
+            ? (" [" + st.gpuArchName() + "]")
+            : "";
+        String gpuLine = "GPU: " + st.gpuName() + archTag
+            + (st.driverVersion().equals("-") ? "" : (" | Driver " + st.driverVersion()));
         String ngxLine = String.format(Locale.ROOT,
             "NGX: %s | Preset: %s (RR: %s) | %dx%d -> %dx%d | %s",
             st.ngxReady() ? "Ready" : "Standby",
@@ -478,13 +639,17 @@ public final class LinRtxConfigScreen extends Screen {
             pipe.currentDisplayWidth(), pipe.currentDisplayHeight(),
             st.swapchainStatus());
         String rrState = st.dlssdActive() ? "ON" : (st.dlssdSupported() ? "OK" : "N/A");
+        String nrState = st.dlssnrActive()
+            ? (st.dlssnrUsingNgx() ? "F18" : "VK")
+            : (cfg.neuralMode != NeuralEngineMode.OFF ? "WAIT" : "OFF");
         String denoiseState = st.denoiserActive() ? st.denoiserStatus() : cfg.denoiseMode.name();
         String compatLine = String.format(Locale.ROOT,
-            "DLSS=%s RR=%s FG=%s(%dx) | Denoise=%s | HDR=%s | Iris=%s DH=%s",
+            "DLSS=%s RR=%s FG=%s(%dx) NR=%s | Denoise=%s | HDR=%s | Iris=%s DH=%s",
             st.dlssSupported() ? "OK" : "N/A",
             rrState,
             st.dlssgSupported() ? "OK" : "N/A",
             st.maxFgMultiplier(),
+            nrState,
             denoiseState,
             st.trueHdrStatus(),
             IrisCompat.isLoaded() ? (IrisCompat.isPackInUse() ? "Active" : "Yes") : "No",
@@ -495,6 +660,8 @@ public final class LinRtxConfigScreen extends Screen {
         gui.text(this.font, trimToWidth(compatLine, panelW - 36), panelX + 18, statY + 35, 0xFFAABCB1, false);
         if (!st.lastErrorMsg().isEmpty()) {
             gui.text(this.font, trimToWidth("Note: " + st.lastErrorMsg(), panelW - 36), panelX + 18, statY + 49, 0xFFFFB070, false);
+        } else if (activeTab == Tab.NEURAL || st.dlssnrActive()) {
+            gui.text(this.font, trimToWidth("DLSS 5 NR: " + st.dlssnrStatus(), panelW - 36), panelX + 18, statY + 49, 0xFF8BE8A8, false);
         }
     }
 

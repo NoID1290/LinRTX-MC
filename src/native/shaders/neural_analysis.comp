@@ -1,0 +1,170 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uColorTex;
+layout(set = 0, binding = 1) uniform sampler2D uDepthTex;
+layout(set = 0, binding = 2) uniform sampler2D uMvecTex;
+layout(set = 0, binding = 3) uniform sampler2D uPrevStatsTex;
+
+layout(set = 0, binding = 4) writeonly uniform image2D uOutStatsImg;
+
+layout(push_constant) uniform PushConstants {
+    uint workWidth;
+    uint workHeight;
+    uint resetHistory;
+    uint inputIsHdr;
+    uint reverseZ;
+    uint useAutoMask;
+    uint presetMode;      // 0 = Auto, 1 = Quality, 2 = Small/Fast
+    float nearPlane;
+    float farPlane;
+    float temporalBlend;
+} pc;
+
+vec3 sanitizeVec3(vec3 c) {
+    return vec3(
+        (isnan(c.r) || isinf(c.r)) ? 0.0 : clamp(c.r, 0.0, 65504.0),
+        (isnan(c.g) || isinf(c.g)) ? 0.0 : clamp(c.g, 0.0, 65504.0),
+        (isnan(c.b) || isinf(c.b)) ? 0.0 : clamp(c.b, 0.0, 65504.0)
+    );
+}
+
+vec3 srgbToLinear(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+    vec3 low = c / 12.92;
+    vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(high, low, cutoff);
+}
+
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+bool isSkyDepth(float rawDepth) {
+    return (pc.reverseZ != 0u) ? (rawDepth <= 1e-6) : (rawDepth >= 1.0 - 1e-6);
+}
+
+float linearizeDepth(float rawDepth) {
+    float n = max(pc.nearPlane, 0.01);
+    float f = max(pc.farPlane, n + 1.0);
+    float z = clamp(rawDepth, 0.0, 1.0);
+    if (pc.reverseZ != 0u) {
+        return (n * f) / max(1e-6, z * (f - n) + n);
+    }
+    return (n * f) / max(1e-6, f - z * (f - n));
+}
+
+vec3 readLinear(vec2 uv) {
+    vec3 c = sanitizeVec3(textureLod(uColorTex, clamp(uv, 0.0, 1.0), 0.0).rgb);
+    return (pc.inputIsHdr != 0u) ? c : srgbToLinear(c);
+}
+
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= pc.workWidth || px.y >= pc.workHeight) return;
+
+    vec2 invRes = 1.0 / vec2(float(pc.workWidth), float(pc.workHeight));
+    vec2 uv = (vec2(px) + 0.5) * invRes;
+
+    vec3 centerLin = readLinear(uv);
+    float centerLuma = luminance(centerLin);
+    float centerLog = log2(max(centerLuma, 1e-4));
+
+    float rawDepth = textureLod(uDepthTex, uv, 0.0).r;
+    bool sky = isSkyDepth(rawDepth);
+    float zCurr = sky ? pc.farPlane : linearizeDepth(rawDepth);
+
+    // Multi-scale joint-bilateral local log-luminance & structural variance estimation
+    const vec2 kOffsetsSmall[4] = vec2[](
+        vec2(-1.5,  0.0), vec2( 1.5,  0.0),
+        vec2( 0.0, -1.5), vec2( 0.0,  1.5)
+    );
+    const vec2 kOffsetsWide[8] = vec2[](
+        vec2(-2.0, -2.0), vec2( 2.0, -2.0),
+        vec2(-2.0,  2.0), vec2( 2.0,  2.0),
+        vec2(-5.5,  0.0), vec2( 5.5,  0.0),
+        vec2( 0.0, -5.5), vec2( 0.0,  5.5)
+    );
+
+    float sumLog = centerLog;
+    float sumWeight = 1.0;
+    float energyAccum = 0.0;
+    float energyWeight = 0.0;
+
+    for (int i = 0; i < 4; ++i) {
+        vec2 suv = clamp(uv + kOffsetsSmall[i] * invRes, 0.0, 1.0);
+        float sLuma = luminance(readLinear(suv));
+        float sLog = log2(max(sLuma, 1e-4));
+        float sRawD = textureLod(uDepthTex, suv, 0.0).r;
+        float sZ = isSkyDepth(sRawD) ? pc.farPlane : linearizeDepth(sRawD);
+
+        float relDz = abs(sZ - zCurr) / max(zCurr, 0.25);
+        float wZ = exp(-relDz * 6.0);
+        float dLog = abs(sLog - centerLog);
+        float wL = exp(-dLog * 0.75);
+        float w = wZ * wL * 0.85;
+
+        sumLog += sLog * w;
+        sumWeight += w;
+        energyAccum += dLog * wZ;
+        energyWeight += wZ;
+    }
+
+    if (pc.presetMode != 2u) {
+        for (int i = 0; i < 8; ++i) {
+            vec2 suv = clamp(uv + kOffsetsWide[i] * invRes, 0.0, 1.0);
+            float sLuma = luminance(readLinear(suv));
+            float sLog = log2(max(sLuma, 1e-4));
+            float sRawD = textureLod(uDepthTex, suv, 0.0).r;
+            float sZ = isSkyDepth(sRawD) ? pc.farPlane : linearizeDepth(sRawD);
+
+            float relDz = abs(sZ - zCurr) / max(zCurr, 0.25);
+            float wZ = exp(-relDz * 4.5);
+            float dLog = abs(sLog - centerLog);
+            float wL = exp(-dLog * 0.55);
+            float scaleW = (i < 4) ? 0.60 : 0.40;
+            float w = wZ * wL * scaleW;
+
+            sumLog += sLog * w;
+            sumWeight += w;
+            energyAccum += dLog * wZ * 0.5;
+            energyWeight += wZ * 0.5;
+        }
+    }
+
+    float localLogLuma = sumLog / max(sumWeight, 1e-4);
+    float localEnergy = clamp(energyAccum / max(energyWeight, 1e-4), 0.0, 4.0);
+
+    // Heuristic auto-mask: attenuate neural over-processing on sky & high-motion disocclusions
+    vec2 mv = textureLod(uMvecTex, uv, 0.0).rg;
+    float mvMag = length(mv * vec2(float(pc.workWidth), float(pc.workHeight)));
+    float autoMask = 1.0;
+    if (pc.useAutoMask != 0u) {
+        float skyMask = sky ? 0.18 : 1.0;
+        float motionMask = 1.0 - 0.30 * smoothstep(4.0, 28.0, mvMag);
+        autoMask = skyMask * motionMask;
+    }
+
+    // Temporal stabilization via backward motion vectors
+    vec2 prevUv = uv + mv;
+    bool validHist = (pc.resetHistory == 0u) &&
+                     prevUv.x >= 0.0 && prevUv.x <= 1.0 &&
+                     prevUv.y >= 0.0 && prevUv.y <= 1.0;
+
+    if (validHist) {
+        vec4 prev = textureLod(uPrevStatsTex, prevUv, 0.0);
+        float zPrev = prev.a;
+        float relDz = abs(zPrev - zCurr) / max(zCurr, 0.2);
+        if (zPrev > 0.0 && !isnan(prev.r) && !isinf(prev.r) && relDz < 0.18) {
+            float alpha = clamp(pc.temporalBlend, 0.0, 0.92) * (1.0 - 0.5 * smoothstep(2.0, 20.0, mvMag));
+            localLogLuma = mix(localLogLuma, clamp(prev.r, localLogLuma - 1.25, localLogLuma + 1.25), alpha);
+            localEnergy = mix(localEnergy, clamp(prev.g, 0.0, 4.0), alpha * 0.85);
+            autoMask = mix(autoMask, clamp(prev.b, 0.0, 1.0), alpha * 0.75);
+        } else if (pc.useAutoMask != 0u) {
+            autoMask *= 0.72; // Disocclusion confidence damping
+        }
+    }
+
+    imageStore(uOutStatsImg, ivec2(px), vec4(localLogLuma, localEnergy, autoMask, zCurr));
+}

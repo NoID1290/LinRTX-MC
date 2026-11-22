@@ -42,6 +42,10 @@ set(SVGF_TEMPORAL_HEADER "${GEN_SHADER_DIR}/svgf_temporal_spv.h")
 set(SVGF_ATROUS_HEADER "${GEN_SHADER_DIR}/svgf_atrous_spv.h")
 set(GBUFFER_SYNTH_HEADER "${GEN_SHADER_DIR}/gbuffer_synth_spv.h")
 set(COLOR_CONVERT_HEADER "${GEN_SHADER_DIR}/color_convert_spv.h")
+set(NEURAL_ANALYSIS_HEADER "${GEN_SHADER_DIR}/neural_analysis_spv.h")
+set(NEURAL_FILTER_HEADER "${GEN_SHADER_DIR}/neural_filter_spv.h")
+set(GUIDE_COMPLETE_HEADER "${GEN_SHADER_DIR}/guide_complete_spv.h")
+set(PRE_TONEMAP_RESOLVE_HEADER "${GEN_SHADER_DIR}/pre_tonemap_resolve_spv.h")
 
 compile_comp_shader("${CMAKE_CURRENT_SOURCE_DIR}/shaders/rtx_hdr.comp" "kRtxHdrSpv" "${RTX_HDR_HEADER}")
 compile_comp_shader("${CMAKE_CURRENT_SOURCE_DIR}/shaders/cas_sharpen.comp" "kCasSharpenSpv" "${CAS_SHARPEN_HEADER}")
@@ -49,15 +53,21 @@ compile_comp_shader("${CMAKE_CURRENT_SOURCE_DIR}/shaders/svgf_temporal.comp" "kS
 compile_comp_shader("${CMAKE_CURRENT_SOURCE_DIR}/shaders/svgf_atrous.comp" "kSvgfAtrousSpv" "${SVGF_ATROUS_HEADER}")
 compile_comp_shader("${CMAKE_CURRENT_SOURCE_DIR}/shaders/gbuffer_synth.comp" "kGbufferSynthSpv" "${GBUFFER_SYNTH_HEADER}")
 compile_comp_shader("${CMAKE_CURRENT_SOURCE_DIR}/shaders/color_convert.comp" "kColorConvertSpv" "${COLOR_CONVERT_HEADER}")
+compile_comp_shader("${CMAKE_CURRENT_SOURCE_DIR}/shaders/neural_analysis.comp" "kNeuralAnalysisSpv" "${NEURAL_ANALYSIS_HEADER}")
+compile_comp_shader("${CMAKE_CURRENT_SOURCE_DIR}/shaders/neural_filter.comp" "kNeuralFilterSpv" "${NEURAL_FILTER_HEADER}")
+compile_comp_shader("${CMAKE_CURRENT_SOURCE_DIR}/shaders/guide_complete.comp" "kGuideCompleteSpv" "${GUIDE_COMPLETE_HEADER}")
+compile_comp_shader("${CMAKE_CURRENT_SOURCE_DIR}/shaders/pre_tonemap_resolve.comp" "kPreTonemapResolveSpv" "${PRE_TONEMAP_RESOLVE_HEADER}")
 
 add_library(linrtx SHARED
     src/gl_dispatch.cpp
     src/vk_ngx_context.cpp
     src/compute_pipeline.cpp
     src/svgf_denoiser.cpp
+    src/pre_tonemap_helper.cpp
     src/dlss_sr.cpp
     src/dlss_rr.cpp
     src/dlss_fg.cpp
+    src/dlss_nr.cpp
     src/rtx_hdr.cpp
     src/vk_presenter.cpp
     src/linrtx_api.cpp
@@ -67,6 +77,10 @@ add_library(linrtx SHARED
     "${SVGF_ATROUS_HEADER}"
     "${GBUFFER_SYNTH_HEADER}"
     "${COLOR_CONVERT_HEADER}"
+    "${NEURAL_ANALYSIS_HEADER}"
+    "${NEURAL_FILTER_HEADER}"
+    "${GUIDE_COMPLETE_HEADER}"
+    "${PRE_TONEMAP_RESOLVE_HEADER}"
 )
 
 target_include_directories(linrtx PRIVATE

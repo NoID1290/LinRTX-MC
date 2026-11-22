@@ -1,7 +1,17 @@
+#include "dlss_nr.hpp"
 #include "dlss_sr.hpp"
 
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
+
+#define CHECK_TRUE(cond)                                                     \
+    do {                                                                     \
+        if (!(cond)) {                                                       \
+            std::fprintf(stderr, "FAIL: %s (%s:%d)\n", #cond, __FILE__, __LINE__); \
+            return 1;                                                        \
+        }                                                                    \
+    } while (0)
 
 int main() {
     using namespace linrtx;
@@ -40,6 +50,28 @@ int main() {
     assert(clampEvenDim(1487, 2560) == 1486u);
     assert(clampEvenDim(2560, 2560) == 2560u);
     assert(clampEvenDim(3000, 2560) == 2560u);
+
+    // 4. DLSS 5 Neural Engine Filter working scale & preset normalization
+    uint32_t ww = 0, wh = 0;
+    computeNeuralWorkingSize(2560, 1440, 1.0f, ww, wh);
+    CHECK_TRUE(ww == 2560u && wh == 1440u);
+
+    computeNeuralWorkingSize(2560, 1440, 0.50f, ww, wh);
+    CHECK_TRUE(ww == 1280u && wh == 720u);
+
+    computeNeuralWorkingSize(1920, 1080, 0.25f, ww, wh); // clamps to 0.50f min
+    CHECK_TRUE(ww == 960u && wh == 540u);
+
+    computeNeuralWorkingSize(1920, 1080, 0.75f, ww, wh);
+    CHECK_TRUE(ww == 1440u && wh == 810u);
+
+    computeNeuralWorkingSize(0, 0, 0.75f, ww, wh);
+    CHECK_TRUE(ww == 0u && wh == 0u);
+
+    CHECK_TRUE(normalizeNeuralPreset(LINRTX_NEURAL_PRESET_AUTO) == 0u);
+    CHECK_TRUE(normalizeNeuralPreset(LINRTX_NEURAL_PRESET_QUALITY) == 1u);
+    CHECK_TRUE(normalizeNeuralPreset(LINRTX_NEURAL_PRESET_SMALL_FP8) == 2u);
+    CHECK_TRUE(normalizeNeuralPreset(999) == 0u);
 
     std::printf("PASS: test_dlss_helpers\n");
     return 0;

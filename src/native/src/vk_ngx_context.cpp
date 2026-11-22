@@ -48,6 +48,35 @@ void NVSDK_CONV ngxLogCallback(const char* message, NVSDK_NGX_Logging_Level leve
               msg.c_str());
 }
 
+std::string classifyGpuArch(uint32_t vendorId, uint32_t deviceId, const char* deviceName) {
+    if (vendorId != 0x10DE) {
+        return "Vulkan GPU";
+    }
+    std::string name = deviceName ? deviceName : "";
+    if (name.find("RTX 50") != std::string::npos || name.find("Blackwell") != std::string::npos) {
+        return "Blackwell (SM120)";
+    }
+    if (name.find("RTX 40") != std::string::npos || name.find("Ada") != std::string::npos) {
+        return "Ada (SM89)";
+    }
+    if (name.find("RTX 30") != std::string::npos || name.find("RTX A") != std::string::npos) {
+        return "Ampere (SM86)";
+    }
+    if (name.find("RTX 20") != std::string::npos || name.find("TITAN RTX") != std::string::npos) {
+        return "Turing (SM75)";
+    }
+    // PCI device ID ranges fallback for NVIDIA RTX families
+    const uint32_t hi = (deviceId >> 8) & 0xFFu;
+    if (hi == 0x2B || hi == 0x2C || hi == 0x2D) return "Blackwell (SM120)";
+    if (hi == 0x26 || hi == 0x27 || hi == 0x28) return "Ada (SM89)";
+    if (hi == 0x22 || hi == 0x24 || hi == 0x25) return "Ampere (SM86)";
+    if (hi == 0x1E || hi == 0x1F) return "Turing (SM75)";
+    if (name.find("RTX") != std::string::npos) {
+        return "NVIDIA RTX";
+    }
+    return "NVIDIA GPU";
+}
+
 } // namespace
 
 std::wstring VkNgxContext::utf8ToWide(const char* s) {
@@ -58,6 +87,23 @@ std::wstring VkNgxContext::utf8ToWide(const char* s) {
         out.push_back(static_cast<wchar_t>(*p));
     }
     return out;
+}
+
+std::vector<std::string> VkNgxContext::splitSearchDirs(const char* raw) {
+    std::vector<std::string> dirs;
+    if (!raw || !*raw) return dirs;
+    std::string s(raw);
+    for (char& ch : s) {
+        if (ch == ';') ch = ':';
+    }
+    std::stringstream ss(s);
+    std::string item;
+    while (std::getline(ss, item, ':')) {
+        if (!item.empty()) {
+            dirs.push_back(item);
+        }
+    }
+    return dirs;
 }
 
 uint32_t VkNgxContext::findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required) const {
@@ -157,6 +203,7 @@ bool VkNgxContext::init(const LinRtxInitConfig* cfg) {
     collectNgxInstExts(NVSDK_NGX_Feature_SuperSampling, "SR");
     collectNgxInstExts(NVSDK_NGX_Feature_RayReconstruction, "RR");
     collectNgxInstExts(NVSDK_NGX_Feature_FrameGeneration, "FG");
+    collectNgxInstExts(NVSDK_NGX_Feature_Reserved18, "DLSSNR");
 
     const char* coreInstExts[] = {
         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
@@ -256,6 +303,9 @@ bool VkNgxContext::init(const LinRtxInitConfig* cfg) {
             bestScore = score;
             physicalDevice = pd;
             gpuName = props2.properties.deviceName;
+            pciVendorId = props2.properties.vendorID;
+            pciDeviceId = props2.properties.deviceID;
+            gpuArchName = classifyGpuArch(pciVendorId, pciDeviceId, gpuName.c_str());
             uint32_t drv = props2.properties.driverVersion;
             // NVIDIA driver version encoding: major (10b), minor (8b), sub (8b), patch (6b)
             uint32_t maj = (drv >> 22) & 0x3FF;
@@ -272,7 +322,8 @@ bool VkNgxContext::init(const LinRtxInitConfig* cfg) {
         lastError = "Failed to select Vulkan physical device";
         return false;
     }
-    logNative("vkNgx.init: selected GPU='%s' driver=%s score=%d", gpuName.c_str(), driverVersion.c_str(), bestScore);
+    logNative("vkNgx.init: selected GPU='%s' arch='%s' devId=0x%04x driver=%s score=%d",
+              gpuName.c_str(), gpuArchName.c_str(), pciDeviceId, driverVersion.c_str(), bestScore);
 
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
 
@@ -337,6 +388,12 @@ bool VkNgxContext::init(const LinRtxInitConfig* cfg) {
     collectNgxDevExts(NVSDK_NGX_Feature_SuperSampling, "SR");
     collectNgxDevExts(NVSDK_NGX_Feature_RayReconstruction, "RR");
     collectNgxDevExts(NVSDK_NGX_Feature_FrameGeneration, "FG");
+    collectNgxDevExts(NVSDK_NGX_Feature_Reserved18, "DLSSNR");
+
+    hasCooperativeMatrix = hasExtension(availDevExts, "VK_KHR_cooperative_matrix") ||
+                           hasExtension(availDevExts, "VK_NV_cooperative_matrix2");
+    hasFloat8 = hasExtension(availDevExts, "VK_EXT_shader_float8");
+    logNative("vkNgx.init: coopMat=%d fp8=%d", hasCooperativeMatrix ? 1 : 0, hasFloat8 ? 1 : 0);
 
     // Vulkan forbids enabling both VK_KHR_buffer_device_address and VK_EXT_buffer_device_address simultaneously.
     if (devSeen.count(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME) &&
@@ -538,6 +595,10 @@ bool VkNgxContext::init(const LinRtxInitConfig* cfg) {
         if (NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetI(ngxParams, NVSDK_NGX_Parameter_FrameGeneration_Available, &availDlssg))) {
             dlssgSupported = (availDlssg != 0);
         }
+        int availDlssnr = 0;
+        if (NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetI(ngxParams, "DLSSNR.Available", &availDlssnr))) {
+            dlssnrSupported = (availDlssnr != 0);
+        }
         unsigned int maxMulti = 1;
         if (NVSDK_NGX_SUCCEED(NVSDK_NGX_Parameter_GetUI(ngxParams, NVSDK_NGX_DLSSG_Parameter_MultiFrameCountMax, &maxMulti))) {
             maxFgMultiplier = static_cast<int32_t>(maxMulti + 1); // MultiFrameCount = generated frames, total = 1 + generated
@@ -546,8 +607,9 @@ bool VkNgxContext::init(const LinRtxInitConfig* cfg) {
         }
     }
 
-    logNative("vkNgx.init: capabilities dlss=%d dlssd=%d dlssg=%d maxFg=%d",
-              dlssSupported ? 1 : 0, dlssdSupported ? 1 : 0, dlssgSupported ? 1 : 0, maxFgMultiplier);
+    logNative("vkNgx.init: capabilities dlss=%d dlssd=%d dlssg=%d dlssnr=%d maxFg=%d",
+              dlssSupported ? 1 : 0, dlssdSupported ? 1 : 0, dlssgSupported ? 1 : 0,
+              dlssnrSupported ? 1 : 0, maxFgMultiplier);
     return true;
     }); // end ngxWorker().run
 
@@ -638,6 +700,12 @@ void VkNgxContext::shutdown() {
     dlssSupported = false;
     dlssdSupported = false;
     dlssgSupported = false;
+    dlssnrSupported = false;
+    hasCooperativeMatrix = false;
+    hasFloat8 = false;
+    pciVendorId = 0;
+    pciDeviceId = 0;
+    gpuArchName.clear();
 }
 
 bool VkNgxContext::createSharedTexture(SharedTexture& tex,

@@ -29,6 +29,18 @@ class ConfigAndPresetTest {
         cfg.denoiseTemporalBlend = 5.0f;  // clamp to 0.96f
         cfg.denoiseStrength = 0.01f;      // clamp to 0.25f
         cfg.denoiseAtrousPasses = 99;     // clamp to 5
+        cfg.f1AccumFadeSamples = 999;     // clamp to 256
+        cfg.neuralMode = NeuralEngineMode.AUTO;
+        cfg.neuralStyle = NeuralStyle.CINEMATIC;
+        cfg.neuralPreset = NeuralPreset.SMALL_FP8;
+        cfg.neuralPlacement = NeuralPlacement.PRE_SR;
+        cfg.neuralUnlockAnyRtx = true;
+        cfg.neuralUseAutoMask = false;
+        cfg.neuralWorkingScale = 0.10f;            // clamp to 0.50f
+        cfg.neuralIntensity = 5.0f;                // clamp to 2.00f
+        cfg.neuralLocalToneStrength = -2.0f;       // clamp to 0.00f
+        cfg.neuralLocalStructureStrength = 3.5f;   // clamp to 2.00f
+        cfg.neuralSkinStructureStrength = -0.8f;   // normalize to -1.0f (Auto)
         cfg.save(cfgPath);
 
         LinRtxConfig reloaded = LinRtxConfig.load(cfgPath);
@@ -46,6 +58,37 @@ class ConfigAndPresetTest {
         assertEquals(0.96f, reloaded.denoiseTemporalBlend, 1e-5f);
         assertEquals(0.25f, reloaded.denoiseStrength, 1e-5f);
         assertEquals(5, reloaded.denoiseAtrousPasses);
+        assertEquals(256, reloaded.f1AccumFadeSamples);
+        assertEquals(NeuralEngineMode.AUTO, reloaded.neuralMode);
+        assertEquals(NeuralStyle.CINEMATIC, reloaded.neuralStyle);
+        assertEquals(NeuralPreset.SMALL_FP8, reloaded.neuralPreset);
+        assertEquals(NeuralPlacement.PRE_SR, reloaded.neuralPlacement);
+        assertTrue(reloaded.neuralUnlockAnyRtx);
+        assertFalse(reloaded.neuralUseAutoMask);
+        assertEquals(0.50f, reloaded.neuralWorkingScale, 1e-5f);
+        assertEquals(2.00f, reloaded.neuralIntensity, 1e-5f);
+        assertEquals(0.00f, reloaded.neuralLocalToneStrength, 1e-5f);
+        assertEquals(2.00f, reloaded.neuralLocalStructureStrength, 1e-5f);
+        assertEquals(-1.00f, reloaded.neuralSkinStructureStrength, 1e-5f);
+    }
+
+    @Test
+    void neuralProfileEnablesDlss5NeuralFilterAndVanillaDisablesIt() {
+        LinRtxPresetProfile.Bundle nrProfile = LinRtxPresetProfile.PROFILES.stream()
+            .filter(p -> p.name().contains("DLSS 5 Neural"))
+            .findFirst()
+            .orElseThrow();
+        LinRtxPresetProfile.Bundle vanillaProfile = LinRtxPresetProfile.PROFILES.stream()
+            .filter(p -> p.name().contains("Vanilla"))
+            .findFirst()
+            .orElseThrow();
+        LinRtxConfig cfg = new LinRtxConfig();
+        LinRtxPresetProfile.applyProfile(cfg, nrProfile);
+        assertEquals(NeuralEngineMode.AUTO, cfg.neuralMode);
+        assertEquals(NeuralStyle.CINEMATIC, cfg.neuralStyle);
+
+        LinRtxPresetProfile.applyProfile(cfg, vanillaProfile);
+        assertEquals(NeuralEngineMode.OFF, cfg.neuralMode);
     }
 
     @Test

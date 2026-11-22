@@ -195,4 +195,67 @@ public final class LinRtxEnums {
             this.displayName = displayName;
         }
     }
+
+    public enum NeuralEngineMode {
+        OFF(0, "Off"),
+        AUTO(1, "Auto (NGX F18 -> Vulkan)"),
+        NGX_ONLY(2, "NVIDIA NGX Feature 18 Only"),
+        VULKAN_ONLY(3, "Vulkan Neural Engine (Any RTX)");
+
+        public final int nativeId;
+        public final String displayName;
+
+        NeuralEngineMode(int nativeId, String displayName) {
+            this.nativeId = nativeId;
+            this.displayName = displayName;
+        }
+    }
+
+    public enum NeuralStyle {
+        DEFAULT(0, "Default"),
+        NATURAL(1, "Natural"),
+        CINEMATIC(2, "Cinematic");
+
+        public final int nativeId;
+        public final String displayName;
+
+        NeuralStyle(int nativeId, String displayName) {
+            this.nativeId = nativeId;
+            this.displayName = displayName;
+        }
+    }
+
+    public enum NeuralPreset {
+        AUTO(0, "Auto"),
+        QUALITY(1, "Quality (HT)"),
+        SMALL_FP8(2, "Small FP8");
+
+        public final int nativeId;
+        public final String displayName;
+
+        NeuralPreset(int nativeId, String displayName) {
+            this.nativeId = nativeId;
+            this.displayName = displayName;
+        }
+
+        public static NeuralPreset fromNativeId(int id) {
+            for (NeuralPreset p : values()) {
+                if (p.nativeId == id) return p;
+            }
+            return AUTO;
+        }
+    }
+
+    public enum NeuralPlacement {
+        POST_SR(0, "Post-SR (Display World)"),
+        PRE_SR(1, "Pre-SR (Render World)");
+
+        public final int nativeId;
+        public final String displayName;
+
+        NeuralPlacement(int nativeId, String displayName) {
+            this.nativeId = nativeId;
+            this.displayName = displayName;
+        }
+    }
 }

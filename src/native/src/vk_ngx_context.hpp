@@ -61,14 +61,20 @@ struct VkNgxContext {
     bool dlssSupported = false;
     bool dlssdSupported = false;
     bool dlssgSupported = false;
+    bool dlssnrSupported = false;
     bool hasSurfaceExts = false;
     bool hasSwapchainColorspace = false;
     bool hasHdrMetadata = false;
+    bool hasCooperativeMatrix = false;
+    bool hasFloat8 = false;
     bool waitingOnGl = false;
     bool ownsNgxParams = false;
 
+    uint32_t pciVendorId = 0;
+    uint32_t pciDeviceId = 0;
     int32_t maxFgMultiplier = 1;
     std::string gpuName;
+    std::string gpuArchName;
     std::string driverVersion;
     std::string lastError;
     int32_t lastErrorCode = 0;
@@ -122,6 +128,7 @@ struct VkNgxContext {
 
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required) const;
     static std::wstring utf8ToWide(const char* s);
+    static std::vector<std::string> splitSearchDirs(const char* raw);
 
     static inline NVSDK_NGX_Resource_VK makeNgxResource(const SharedTexture& tex, bool readWrite) {
         VkImageSubresourceRange range{};

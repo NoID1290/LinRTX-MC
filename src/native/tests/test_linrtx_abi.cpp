@@ -8,7 +8,7 @@
 
 int main() {
     // 1. Verify C ABI struct sizes and offsets match Java FFM MemoryLayout
-    static_assert(sizeof(LinRtxInitConfig) == 72);
+    static_assert(sizeof(LinRtxInitConfig) == 80);
     static_assert(offsetof(LinRtxInitConfig, structSize) == 0);
     static_assert(offsetof(LinRtxInitConfig, enableValidation) == 4);
     static_assert(offsetof(LinRtxInitConfig, appId) == 8);
@@ -19,23 +19,37 @@ int main() {
     static_assert(offsetof(LinRtxInitConfig, ngxLibDir) == 48);
     static_assert(offsetof(LinRtxInitConfig, trueHdrSearchDirs) == 56);
     static_assert(offsetof(LinRtxInitConfig, logDir) == 64);
+    static_assert(offsetof(LinRtxInitConfig, neuralSearchDirs) == 72);
 
-    static_assert(sizeof(LinRtxFrameConfig) == 600);
+    static_assert(sizeof(LinRtxFrameConfig) == 648);
     static_assert(offsetof(LinRtxFrameConfig, colorInTexGlId) == 108);
     static_assert(offsetof(LinRtxFrameConfig, viewToClip) == 208);
     static_assert(offsetof(LinRtxFrameConfig, prevClipToClip) == 400);
     static_assert(offsetof(LinRtxFrameConfig, denoiseMode) == 464);
     static_assert(offsetof(LinRtxFrameConfig, diffuseAlbedoInTexGlId) == 496);
     static_assert(offsetof(LinRtxFrameConfig, worldToView) == 532);
+    static_assert(offsetof(LinRtxFrameConfig, neuralMode) == 600);
+    static_assert(offsetof(LinRtxFrameConfig, neuralWorkingScale) == 624);
+    static_assert(offsetof(LinRtxFrameConfig, neuralSkinStructureStrength) == 640);
 
-    static_assert(sizeof(LinRtxDenoiseConfig) == 96);
+    static_assert(sizeof(LinRtxDenoiseConfig) == 504);
+    static_assert(offsetof(LinRtxDenoiseConfig, rrMode) == 96);
+    static_assert(offsetof(LinRtxDenoiseConfig, inputsTopLeftVk) == 108);
+    static_assert(offsetof(LinRtxDenoiseConfig, f1AccumActive) == 112);
+    static_assert(offsetof(LinRtxDenoiseConfig, f1FadeSamples) == 116);
+    static_assert(offsetof(LinRtxDenoiseConfig, viewToClip) == 184);
+    static_assert(offsetof(LinRtxDenoiseConfig, worldToView) == 440);
 
-    static_assert(sizeof(LinRtxStatus) == 1104);
+    static_assert(sizeof(LinRtxStatus) == 1352);
     static_assert(offsetof(LinRtxStatus, gpuName) == 64);
     static_assert(offsetof(LinRtxStatus, lastErrorMsg) == 640);
     static_assert(offsetof(LinRtxStatus, dlssdSupported) == 896);
     static_assert(offsetof(LinRtxStatus, dlssdVersion) == 912);
     static_assert(offsetof(LinRtxStatus, denoiserStatus) == 976);
+    static_assert(offsetof(LinRtxStatus, dlssnrNgxLoaded) == 1104);
+    static_assert(offsetof(LinRtxStatus, gpuArchName) == 1128);
+    static_assert(offsetof(LinRtxStatus, dlssnrVersion) == 1160);
+    static_assert(offsetof(LinRtxStatus, dlssnrStatus) == 1224);
 
     std::printf("LinRtxInitConfig sizeof=%zu logDir_off=%zu\n",
                 sizeof(LinRtxInitConfig), offsetof(LinRtxInitConfig, logDir));

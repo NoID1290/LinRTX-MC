@@ -1,0 +1,52 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uSrcTex;
+layout(set = 0, binding = 1) uniform sampler2D uOrigHdrTex;
+layout(set = 0, binding = 2) writeonly uniform image2D uOutputImg;
+
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+    uint mode;           // 0 = Prep FP16 (sanitize + optional flipY), 1 = Resolve + F1 progressive blend
+    uint flipY;          // 1 = flip Y between GL bottom-up and Vulkan top-left
+    uint preserveAlpha;  // 1 = preserve orig.a (Camellia colortex5 sample count N)
+    uint f1AccumActive;  // 1 = Camellia F1 screenshot accumulation active
+    float f1FadeSamples; // 0 = stay 100% denoised; >1 = fade denoised -> raw colortex5 by N samples
+    uint pad;
+} pc;
+
+vec3 sanitizeHdr(vec3 c) {
+    bvec3 bad = bvec3(isnan(c.x) || isinf(c.x),
+                      isnan(c.y) || isinf(c.y),
+                      isnan(c.z) || isinf(c.z));
+    vec3 safe = mix(c, vec3(0.0), bad);
+    return clamp(safe, vec3(0.0), vec3(65504.0));
+}
+
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= pc.width || px.y >= pc.height) return;
+
+    ivec2 ipx = ivec2(px);
+    ivec2 srcPx = (pc.flipY != 0u) ? ivec2(ipx.x, int(pc.height) - 1 - ipx.y) : ipx;
+    vec3 srcRgb = sanitizeHdr(texelFetch(uSrcTex, srcPx, 0).rgb);
+
+    if (pc.mode == 0u) {
+        imageStore(uOutputImg, ipx, vec4(srcRgb, 1.0));
+        return;
+    }
+
+    vec4 orig = texelFetch(uOrigHdrTex, ipx, 0);
+    vec3 rawRgb = sanitizeHdr(orig.rgb);
+
+    float w = 1.0;
+    if (pc.f1AccumActive != 0u && pc.f1FadeSamples > 1.0 && orig.a > 1.5) {
+        float t = clamp((orig.a - 1.0) / max(pc.f1FadeSamples - 1.0, 1.0), 0.0, 1.0);
+        w = 1.0 - smoothstep(0.0, 1.0, pow(t, 0.75));
+    }
+
+    vec3 outRgb = mix(rawRgb, srcRgb, w);
+    float outA = (pc.preserveAlpha != 0u) ? orig.a : 1.0;
+    imageStore(uOutputImg, ipx, vec4(clamp(outRgb, vec3(0.0), vec3(65504.0)), outA));
+}

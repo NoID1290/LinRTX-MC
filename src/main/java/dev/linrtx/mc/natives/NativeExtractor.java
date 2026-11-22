@@ -23,7 +23,7 @@ import java.util.Set;
 public final class NativeExtractor {
     private static final Logger LOGGER = LoggerFactory.getLogger("LinRTX");
     private static final String BUNDLE_BASE = "/natives/linux-x86_64/";
-    private static final String VERSION_TAG = "linrtx-310.9.16-v6";
+    private static final String VERSION_TAG = "linrtx-310.9.16-v7";
 
     private static final List<String> BUNDLED_LIBS = List.of(
         "liblinrtx.so",
@@ -32,11 +32,25 @@ public final class NativeExtractor {
         "libnvidia-ngx-dlssd.so.310.9.16"
     );
 
-    public record ExtractedPaths(Path libDir, Path linrtxSoPath, Path logDir, String trueHdrSearchDirs) {}
+    public record ExtractedPaths(
+        Path libDir,
+        Path linrtxSoPath,
+        Path logDir,
+        String trueHdrSearchDirs,
+        String neuralSearchDirs
+    ) {}
 
     private NativeExtractor() {}
 
     public static ExtractedPaths extractAndDiscover(Path gameDir, String customTrueHdrDir) throws IOException {
+        return extractAndDiscover(gameDir, customTrueHdrDir, null);
+    }
+
+    public static ExtractedPaths extractAndDiscover(
+        Path gameDir,
+        String customTrueHdrDir,
+        String customNeuralDir
+    ) throws IOException {
         Path ngxDir = gameDir.resolve("linrtx-ngx").toAbsolutePath().normalize();
         Path logDir = ngxDir.resolve("logs");
         Files.createDirectories(ngxDir);
@@ -79,9 +93,11 @@ public final class NativeExtractor {
 
         Files.writeString(stampFile, VERSION_TAG);
 
-        String hdrSearch = discoverTrueHdrDirs(ngxDir, customTrueHdrDir);
-        LOGGER.info("LinRTX native staging dir: {} (TrueHDR search: {})", ngxDir, hdrSearch);
-        return new ExtractedPaths(ngxDir, ngxDir.resolve("liblinrtx.so"), logDir, hdrSearch);
+        String hdrSearch = discoverSearchDirs(ngxDir, customTrueHdrDir);
+        String neuralSearch = discoverSearchDirs(ngxDir, customNeuralDir);
+        LOGGER.info("LinRTX native staging dir: {} (TrueHDR search: {}, DLSS5-NR search: {})",
+            ngxDir, hdrSearch, neuralSearch);
+        return new ExtractedPaths(ngxDir, ngxDir.resolve("liblinrtx.so"), logDir, hdrSearch, neuralSearch);
     }
 
     private static void ensureSymlink(Path dir, String linkName, String targetName) {
@@ -126,6 +142,10 @@ public final class NativeExtractor {
     }
 
     public static String discoverTrueHdrDirs(Path ngxDir, String customDir) {
+        return discoverSearchDirs(ngxDir, customDir);
+    }
+
+    public static String discoverSearchDirs(Path ngxDir, String customDir) {
         Set<String> dirs = new LinkedHashSet<>();
         if (customDir != null && !customDir.isBlank()) {
             dirs.add(customDir.trim());

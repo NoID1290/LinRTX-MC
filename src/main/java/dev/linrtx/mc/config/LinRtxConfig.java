@@ -37,6 +37,7 @@ public final class LinRtxConfig {
     public float denoiseTemporalBlend = 0.88f;
     public float denoiseStrength = 1.0f;
     public int denoiseAtrousPasses = 4;
+    public int f1AccumFadeSamples = 48;
 
     // RTX HDR / TrueHDR
     public HdrEngineMode hdrEngine = HdrEngineMode.AUTO;
@@ -49,6 +50,20 @@ public final class LinRtxConfig {
     public boolean hdrDebanding = true;
     public float hdrHighlightBoost = 0.35f;
     public String customTrueHdrDir = "";
+
+    // DLSS 5 Neural Engine Filter (DLSS-NR / NGX Feature 18 + Unlocked Vulkan Engine)
+    public NeuralEngineMode neuralMode = NeuralEngineMode.OFF;
+    public NeuralStyle neuralStyle = NeuralStyle.DEFAULT;
+    public NeuralPreset neuralPreset = NeuralPreset.AUTO;
+    public NeuralPlacement neuralPlacement = NeuralPlacement.POST_SR;
+    public boolean neuralUnlockAnyRtx = true;
+    public boolean neuralUseAutoMask = true;
+    public float neuralWorkingScale = 1.0f;
+    public float neuralIntensity = 0.75f;
+    public float neuralLocalToneStrength = 1.0f;
+    public float neuralLocalStructureStrength = 1.0f;
+    public float neuralSkinStructureStrength = -1.0f;
+    public String customNeuralDir = "";
 
     // Presentation & UI
     public PresentBackend presentBackend = PresentBackend.OPENGL;
@@ -127,16 +142,29 @@ public final class LinRtxConfig {
         if (rrPreset == null) rrPreset = RrPreset.DEFAULT;
         if (gbufferGuideMode == null) gbufferGuideMode = GbufferGuideMode.AUTO;
         if (customTrueHdrDir == null) customTrueHdrDir = "";
+        if (neuralMode == null) neuralMode = NeuralEngineMode.OFF;
+        if (neuralStyle == null) neuralStyle = NeuralStyle.DEFAULT;
+        if (neuralPreset == null) neuralPreset = NeuralPreset.AUTO;
+        if (neuralPlacement == null) neuralPlacement = NeuralPlacement.POST_SR;
+        if (customNeuralDir == null) customNeuralDir = "";
 
         customScale = Math.max(0.25f, Math.min(1.0f, customScale));
         sharpness = Math.max(0.0f, Math.min(1.0f, sharpness));
         denoiseTemporalBlend = Math.max(0.0f, Math.min(0.96f, denoiseTemporalBlend));
         denoiseStrength = Math.max(0.25f, Math.min(2.5f, denoiseStrength));
         denoiseAtrousPasses = Math.max(1, Math.min(5, denoiseAtrousPasses));
+        f1AccumFadeSamples = Math.max(0, Math.min(256, f1AccumFadeSamples));
         hdrContrast = Math.max(0, Math.min(200, hdrContrast));
         hdrSaturation = Math.max(0, Math.min(200, hdrSaturation));
         hdrMiddleGray = Math.max(10, Math.min(100, hdrMiddleGray));
         hdrMaxLuminance = Math.max(400, Math.min(2000, hdrMaxLuminance));
         hdrHighlightBoost = Math.max(0.0f, Math.min(2.0f, hdrHighlightBoost));
+        neuralWorkingScale = Math.max(0.50f, Math.min(1.0f, neuralWorkingScale));
+        neuralIntensity = Math.max(0.0f, Math.min(2.0f, neuralIntensity));
+        neuralLocalToneStrength = Math.max(0.0f, Math.min(2.0f, neuralLocalToneStrength));
+        neuralLocalStructureStrength = Math.max(0.0f, Math.min(2.0f, neuralLocalStructureStrength));
+        neuralSkinStructureStrength = (neuralSkinStructureStrength < -0.5f)
+            ? -1.0f
+            : Math.max(0.0f, Math.min(2.0f, neuralSkinStructureStrength));
     }
 }

@@ -71,6 +71,30 @@ typedef enum LinRtxRrPreset {
     LINRTX_RR_PRESET_F = 6           /* Preset F (Transformer Ray Reconstruction, temporal stability) */
 } LinRtxRrPreset;
 
+typedef enum LinRtxNeuralEngineMode {
+    LINRTX_NEURAL_OFF = 0,           /* Disabled */
+    LINRTX_NEURAL_AUTO = 1,          /* Try NGX Feature 18 (DLSSNR) with RTX unlock, fallback to Vulkan Neural Filter */
+    LINRTX_NEURAL_NGX_ONLY = 2,      /* NVIDIA NGX Feature 18 (libnvidia-ngx-dlssnr.so) only */
+    LINRTX_NEURAL_VULKAN_ONLY = 3    /* Built-in Vulkan Compute Neural Engine Filter (unlocked for any RTX GPU) */
+} LinRtxNeuralEngineMode;
+
+typedef enum LinRtxNeuralStyle {
+    LINRTX_NEURAL_STYLE_DEFAULT = 0,   /* Balanced faithful neural enhancement */
+    LINRTX_NEURAL_STYLE_NATURAL = 1,   /* Natural organic lighting & material vibrancy */
+    LINRTX_NEURAL_STYLE_CINEMATIC = 2  /* Filmic local contrast, deep shadows & crisp structure */
+} LinRtxNeuralStyle;
+
+typedef enum LinRtxNeuralPreset {
+    LINRTX_NEURAL_PRESET_AUTO = 0,      /* Driver / Engine Auto */
+    LINRTX_NEURAL_PRESET_QUALITY = 1,   /* Quality (WEIGHTS_HT / Full 5x5 Joint-Bilateral + Temporal) */
+    LINRTX_NEURAL_PRESET_SMALL_FP8 = 2  /* Fast Small FP8 (WEIGHTS_CC_SMALL_FP8 / 3x3 Fast Kernel) */
+} LinRtxNeuralPreset;
+
+typedef enum LinRtxNeuralPlacement {
+    LINRTX_NEURAL_POST_SR = 0,       /* Display-res World (after DLSS/CAS, before HUD) */
+    LINRTX_NEURAL_PRE_SR = 1         /* Render-res World (before DLSS-SR upscaling) */
+} LinRtxNeuralPlacement;
+
 /**
  * Runtime configuration passed from Java to native C++ engine.
  * Every field is naturally aligned (4 or 8 bytes) for deterministic Java FFM layout.
@@ -87,6 +111,7 @@ typedef struct LinRtxInitConfig {
     const char* ngxLibDir;         /* Directory holding extracted libnvidia-ngx-dlss*.so */
     const char* trueHdrSearchDirs; /* Semicolon/colon separated directories to search for libnvidia-ngx-truehdr.so */
     const char* logDir;            /* Directory for NGX logs */
+    const char* neuralSearchDirs;  /* Semicolon/colon separated directories to search for libnvidia-ngx-dlssnr.so */
 } LinRtxInitConfig;
 
 /**
@@ -172,11 +197,27 @@ typedef struct LinRtxFrameConfig {
     uint32_t flagsReserved0;           /* Reserved flags (528) */
     float worldToView[16];             /* Row-major world->view 4x4 matrix for DLSS-RR (532..596) */
     uint32_t flagsReserved1;           /* Tail alignment pad (596..600) */
+
+    /* DLSS 5 Neural Engine Filter (DLSS-NR / NGX Feature 18 + Unlocked Vulkan Compute) */
+    int32_t neuralMode;                  /* LinRtxNeuralEngineMode (600) */
+    int32_t neuralStyle;                 /* LinRtxNeuralStyle: 0=Default, 1=Natural, 2=Cinematic (604) */
+    int32_t neuralPreset;                /* LinRtxNeuralPreset: 0=Auto, 1=Quality, 2=Small FP8 (608) */
+    int32_t neuralPlacement;             /* LinRtxNeuralPlacement: 0=Post-SR, 1=Pre-SR (612) */
+    int32_t neuralUnlockAnyRtx;          /* 1 = Unlock across RTX 20/30/40/50 (616) */
+    int32_t neuralUseAutoMask;           /* 1 = DLSSNR.UseAutoMask heuristic protection (620) */
+    float neuralWorkingScale;            /* 0.50 .. 1.00 cost-scaler working scale (624) */
+    float neuralIntensity;               /* 0.00 .. 2.00 DLSSNR.Intensity (628) */
+    float neuralLocalToneStrength;       /* 0.00 .. 2.00 DLSSNR.LocalToneStrength (632) */
+    float neuralLocalStructureStrength;  /* 0.00 .. 2.00 DLSSNR.LocalStructureStrength (636) */
+    float neuralSkinStructureStrength;   /* -1.00 .. 2.00 DLSSNR.SkinStructureStrength (-1=Auto) (640) */
+    uint32_t neuralReserved0;            /* Tail alignment pad (644..648) */
 } LinRtxFrameConfig;
 
+#define LINRTX_FRAME_FLAG_PRETONEMAP_RR_ACTIVE (1u << 0)
+
 /**
- * Standalone pre-tonemap HDR GPU denoiser invocation (used for Iris path-traced
- * radiance buffers such as Camellia colortex5 prior to bloom & tonemapping).
+ * Standalone pre-tonemap HDR GPU denoiser / Ray Reconstruction invocation
+ * (used for Iris path-traced radiance buffers such as Camellia colortex5 prior to bloom & tonemapping).
  */
 typedef struct LinRtxDenoiseConfig {
     uint32_t structSize;
@@ -203,6 +244,27 @@ typedef struct LinRtxDenoiseConfig {
     uint32_t normalsAreWorld;
     float cameraNear;
     float cameraFar;
+
+    /* Extended Pre-Tonemap DLSS-RR (DLSSD 1:1) + F1 progressive sample convergence (offset 96..504) */
+    int32_t rrMode;                   /* LinRtxRrMode: 0=OFF, 1=AUTO, 2=ON (96) */
+    int32_t rrPreset;                 /* LinRtxRrPreset (100) */
+    int32_t denoiseMode;              /* LinRtxDenoiseMode: 0=OFF, 1=SVGF_FAST, 2=SVGF_ATROUS (104) */
+    uint32_t inputsTopLeftVk;         /* 1=depth/mvec/albedo/normals are Vulkan top-left; hdrColor/outHdrColor stay GL bottom-up (108) */
+    uint32_t f1AccumActive;           /* 1=F1 / hideGUI sample-count convergence active (112) */
+    float f1FadeSamples;              /* 0=stay 100% denoised; >1=fade toward raw colortex5.rgb by N samples (116) */
+    float jitterOffsetX;              /* (120) */
+    float jitterOffsetY;              /* (124) */
+    float cameraFovRadians;           /* (128) */
+    float cameraAspect;               /* (132) */
+    float cameraPos[3];               /* (136) */
+    float cameraUp[3];                /* (148) */
+    float cameraRight[3];             /* (160) */
+    float cameraFwd[3];               /* (172) */
+    float viewToClip[16];             /* (184) */
+    float clipToView[16];             /* (248) */
+    float clipToPrevClip[16];         /* (312) */
+    float prevClipToClip[16];         /* (376) */
+    float worldToView[16];            /* (440..504) */
 } LinRtxDenoiseConfig;
 
 /**
@@ -238,6 +300,17 @@ typedef struct LinRtxStatus {
     int32_t activeRrPreset;        /* offset 908 */
     char dlssdVersion[64];         /* offset 912..976 */
     char denoiserStatus[128];      /* offset 976..1104 */
+
+    /* DLSS 5 Neural Engine Filter diagnostics (offset 1104..1352) */
+    int32_t dlssnrNgxLoaded;       /* offset 1104 */
+    int32_t dlssnrNgxSupported;    /* offset 1108 */
+    int32_t dlssnrActive;          /* offset 1112 */
+    int32_t dlssnrUsingNgx;        /* offset 1116 */
+    int32_t dlssnrUnlocked;        /* offset 1120 */
+    int32_t activeNeuralPreset;    /* offset 1124 */
+    char gpuArchName[32];          /* offset 1128..1160 */
+    char dlssnrVersion[64];        /* offset 1160..1224 */
+    char dlssnrStatus[128];        /* offset 1224..1352 */
 } LinRtxStatus;
 
 #ifdef __cplusplus

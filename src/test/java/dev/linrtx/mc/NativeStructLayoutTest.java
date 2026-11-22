@@ -15,25 +15,39 @@ import static org.junit.jupiter.api.Assertions.*;
 class NativeStructLayoutTest {
     @Test
     void ffmStructLayoutsMatchNativeAbi() {
-        assertEquals(72L, LinRtxNative.INIT_CONFIG_LAYOUT.byteSize());
+        assertEquals(80L, LinRtxNative.INIT_CONFIG_LAYOUT.byteSize());
         assertEquals(64L, LinRtxNative.INIT_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("logDir")));
+        assertEquals(72L, LinRtxNative.INIT_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("neuralSearchDirs")));
 
-        assertEquals(600L, LinRtxNative.FRAME_CONFIG_LAYOUT.byteSize());
+        assertEquals(648L, LinRtxNative.FRAME_CONFIG_LAYOUT.byteSize());
         assertEquals(108L, LinRtxNative.FRAME_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("colorInTexGlId")));
         assertEquals(208L, LinRtxNative.FRAME_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("viewToClip")));
         assertEquals(400L, LinRtxNative.FRAME_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("prevClipToClip")));
         assertEquals(464L, LinRtxNative.FRAME_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("denoiseMode")));
         assertEquals(532L, LinRtxNative.FRAME_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("worldToView")));
+        assertEquals(600L, LinRtxNative.FRAME_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("neuralMode")));
+        assertEquals(624L, LinRtxNative.FRAME_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("neuralWorkingScale")));
+        assertEquals(640L, LinRtxNative.FRAME_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("neuralSkinStructureStrength")));
 
-        assertEquals(96L, LinRtxNative.DENOISE_CONFIG_LAYOUT.byteSize());
+        assertEquals(504L, LinRtxNative.DENOISE_CONFIG_LAYOUT.byteSize());
         assertEquals(64L, LinRtxNative.DENOISE_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("temporalBlend")));
         assertEquals(88L, LinRtxNative.DENOISE_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("cameraNear")));
+        assertEquals(96L, LinRtxNative.DENOISE_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("rrMode")));
+        assertEquals(108L, LinRtxNative.DENOISE_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("inputsTopLeftVk")));
+        assertEquals(112L, LinRtxNative.DENOISE_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("f1AccumActive")));
+        assertEquals(116L, LinRtxNative.DENOISE_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("f1FadeSamples")));
+        assertEquals(184L, LinRtxNative.DENOISE_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("viewToClip")));
+        assertEquals(440L, LinRtxNative.DENOISE_CONFIG_LAYOUT.byteOffset(PathElement.groupElement("worldToView")));
 
-        assertEquals(1104L, LinRtxNative.STATUS_LAYOUT.byteSize());
+        assertEquals(1352L, LinRtxNative.STATUS_LAYOUT.byteSize());
         assertEquals(64L, LinRtxNative.STATUS_LAYOUT.byteOffset(PathElement.groupElement("gpuName")));
         assertEquals(640L, LinRtxNative.STATUS_LAYOUT.byteOffset(PathElement.groupElement("lastErrorMsg")));
         assertEquals(896L, LinRtxNative.STATUS_LAYOUT.byteOffset(PathElement.groupElement("dlssdSupported")));
         assertEquals(976L, LinRtxNative.STATUS_LAYOUT.byteOffset(PathElement.groupElement("denoiserStatus")));
+        assertEquals(1104L, LinRtxNative.STATUS_LAYOUT.byteOffset(PathElement.groupElement("dlssnrNgxLoaded")));
+        assertEquals(1128L, LinRtxNative.STATUS_LAYOUT.byteOffset(PathElement.groupElement("gpuArchName")));
+        assertEquals(1160L, LinRtxNative.STATUS_LAYOUT.byteOffset(PathElement.groupElement("dlssnrVersion")));
+        assertEquals(1224L, LinRtxNative.STATUS_LAYOUT.byteOffset(PathElement.groupElement("dlssnrStatus")));
     }
 
     @Test
@@ -65,6 +79,7 @@ class NativeStructLayoutTest {
         assertTrue(expectedSize > 10_000L);
         assertFalse(first.trueHdrSearchDirs().contains(".cache/uv"),
             () -> "Unexpected uv cache path in TrueHDR search dirs: " + first.trueHdrSearchDirs());
+        assertTrue(first.neuralSearchDirs().contains("linrtx-ngx"));
 
         // Overwrite extracted liblinrtx.so while keeping the current version stamp to simulate stale cache
         Files.writeString(first.linrtxSoPath(), "stale-broken-so");

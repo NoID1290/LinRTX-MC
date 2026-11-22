@@ -70,6 +70,11 @@ public final class LinRtxHudOverlay {
         } else if (cfg.denoiseMode != DenoiseMode.OFF && !st.dlssdActive()) {
             sb.append(" | SVGF");
         }
+        if (st.dlssnrActive()) {
+            sb.append(" | DLSS5-NR(").append(st.dlssnrUsingNgx() ? "F18" : "VK").append(')');
+        } else if (cfg.neuralMode != NeuralEngineMode.OFF) {
+            sb.append(" | DLSS5-NR");
+        }
         if (cfg.fgMode != FrameGenMode.OFF) {
             sb.append(" | FG ").append(cfg.fgMode.multiplier).append('x');
             if (!st.dlssgActive() && st.vkReady() && !st.dlssgSupported()) {
@@ -95,7 +100,7 @@ public final class LinRtxHudOverlay {
         int x = 6;
         int y = 6;
         gui.fill(x, y, x + w, y + 14, 0xA8101412);
-        gui.outline(x, y, w, 14, (st.dlssActive() || st.dlssdActive() || st.denoiserActive()) ? 0xFF76B900 : 0xFF607068);
+        gui.outline(x, y, w, 14, (st.dlssActive() || st.dlssdActive() || st.denoiserActive() || st.dlssnrActive()) ? 0xFF76B900 : 0xFF607068);
         gui.text(font, line, x + padX, y + 3, 0xFFE6F4EA, false);
     }
 }

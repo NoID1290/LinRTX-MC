@@ -176,7 +176,8 @@ public final class LinRtxPipeline {
 
         try {
             Path gameDir = mc.gameDirectory.toPath();
-            NativeExtractor.ExtractedPaths paths = NativeExtractor.extractAndDiscover(gameDir, cfg.customTrueHdrDir);
+            NativeExtractor.ExtractedPaths paths = NativeExtractor.extractAndDiscover(
+                gameDir, cfg.customTrueHdrDir, cfg.customNeuralDir);
             if (!LinRtxNative.loadLibrary(paths.linrtxSoPath())) {
                 LOGGER.warn("Native FFM load failed: {}", LinRtxNative.getLoadError());
                 return;
@@ -191,14 +192,16 @@ public final class LinRtxPipeline {
                 nwi.isWayland,
                 paths.libDir().toString(),
                 paths.trueHdrSearchDirs(),
-                paths.logDir().toString()
+                paths.logDir().toString(),
+                paths.neuralSearchDirs()
             );
             nativeReady = (rc == 0);
             statusSnapshot = LinRtxNative.getStatus();
             cachedMode = null; // Force NGX optimal scale query on next frame
-            LOGGER.info("LinRTX native init rc={}, GPU='{}', DLSS={}, DLSS-RR={}, DLSS-G={}, TrueHDR={}",
-                rc, statusSnapshot.gpuName(), statusSnapshot.dlssSupported(),
-                statusSnapshot.dlssdSupported(), statusSnapshot.dlssgSupported(), statusSnapshot.trueHdrNgxLoaded());
+            LOGGER.info("LinRTX native init rc={}, GPU='{}' ({}), DLSS={}, DLSS-RR={}, DLSS-G={}, TrueHDR={}, DLSS5-NR(NGX)={}",
+                rc, statusSnapshot.gpuName(), statusSnapshot.gpuArchName(), statusSnapshot.dlssSupported(),
+                statusSnapshot.dlssdSupported(), statusSnapshot.dlssgSupported(), statusSnapshot.trueHdrNgxLoaded(),
+                statusSnapshot.dlssnrNgxLoaded());
         } catch (Throwable t) {
             LOGGER.error("LinRTX native initialization failed", t);
             nativeReady = false;
@@ -212,6 +215,10 @@ public final class LinRtxPipeline {
             cachedDisplayH = displayH;
             cachedRenderW = displayW;
             cachedRenderH = displayH;
+            currentDisplayW = displayW;
+            currentDisplayH = displayH;
+            currentRenderW = displayW;
+            currentRenderH = displayH;
             currentMipBias = 0.0f;
             return;
         }
@@ -307,7 +314,18 @@ public final class LinRtxPipeline {
         activeRenderW = cachedRenderW;
         activeRenderH = cachedRenderH;
 
-        if (cfg.dlssMode != DlssMode.OFF) {
+        preTonemapRrUsedThisFrame = false;
+        Minecraft mcInst = Minecraft.getInstance();
+        boolean curF1HideGui = IrisCompat.isPackInUse()
+            && mcInst != null && mcInst.gui != null && mcInst.gui.hud != null
+            && mcInst.gui.hud.isHidden();
+        if (curF1HideGui != wasF1HideGuiIris) {
+            wasF1HideGuiIris = curF1HideGui;
+            cameraTracker.requestReset();
+        }
+        activeF1HideGui = curF1HideGui;
+
+        if (cfg.dlssMode != DlssMode.OFF && !activeF1HideGui) {
             jitter.advance(activeRenderW, activeDisplayW);
         } else {
             jitter.reset();
@@ -379,7 +397,7 @@ public final class LinRtxPipeline {
         activeMcReverseZ = IrisCompat.isReverseZActive();
         activeMcZeroToOne = RenderSystem.getDevice().getDeviceInfo().isZZeroToOne();
 
-        if (cfg.dlssMode != DlssMode.OFF && activeRenderW > 0 && activeRenderH > 0) {
+        if (cfg.dlssMode != DlssMode.OFF && activeRenderW > 0 && activeRenderH > 0 && !activeF1HideGui) {
             jitter.applyProjectionJitter(projMat, activeRenderW, activeRenderH);
         }
     }
@@ -436,11 +454,15 @@ public final class LinRtxPipeline {
             irisGuidesCapturedThisFrame = true;
         }
 
-        // Pre-tonemap linear HDR SVGF on Camellia colortex5 when DLSS-RR is not active
+        // Pre-tonemap linear HDR DLSS-RR / SVGF on Camellia colortex5 before Bloom & AgX
+        boolean wantPreRr = nativeReady
+            && statusSnapshot.dlssdSupported()
+            && (cfg.rrMode == RayReconstructionMode.ON
+                || (cfg.rrMode == RayReconstructionMode.AUTO
+                    && (cfg.dlssMode != DlssMode.OFF || cfg.denoiseMode != DenoiseMode.OFF)));
         if (nativeReady
                 && cfg.preTonemapIrisDenoise
-                && cfg.denoiseMode != DenoiseMode.OFF
-                && !willUseDlssRrStage1(cfg, irisGuidesCapturedThisFrame)
+                && (wantPreRr || cfg.denoiseMode != DenoiseMode.OFF)
                 && isSupportedPreTonemapFmt(c5.internalGlFormat())) {
             int irisDepthGl = IrisCompat.resolveRenderTargetsDepthGlId(renderTargets);
             if (irisDepthGl > 0) {
@@ -452,48 +474,68 @@ public final class LinRtxPipeline {
                 quadPass.copyImageDirect(c5.mainTexGlId(), targets.rawHdrBackupTex(), cw, ch);
 
                 boolean hasDh = ensureDhSnapshotThisFrame(cfg);
-                quadPass.runPreTonemapDepthMvPass(
-                    irisDepthGl,
-                    activeMcReverseZ,
-                    activeMcZeroToOne,
-                    jitter.currentX(),
-                    jitter.currentY(),
-                    dhSnapshot,
-                    hasDh,
-                    cameraTracker,
-                    targets.preDepthTex(),
-                    targets.preMvecTex(),
-                    cw,
-                    ch
-                );
+                float jx = activeF1HideGui ? 0.0f : jitter.currentX();
+                float jy = activeF1HideGui ? 0.0f : jitter.currentY();
+                boolean useTopLeftVk = wantPreRr && cw == activeRenderW && ch == activeRenderH;
 
-                int atrousPasses = (cfg.denoiseMode == DenoiseMode.SVGF_FAST)
-                    ? Math.min(2, cfg.denoiseAtrousPasses)
-                    : cfg.denoiseAtrousPasses;
-                MemorySegment dseg = LinRtxNative.scratchDenoiseConfig();
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 4, cw);
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 8, ch);
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 12, cameraTracker.isResetPending() ? 1 : 0);
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 16, targets.rawHdrBackupTex());
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 20, cfmt);
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 24, c5.mainTexGlId());
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 28, cfmt);
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 32, targets.preDepthTex());
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 36, GL30.GL_R32F);
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 40, targets.preMvecTex());
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 44, GL30.GL_RG16F);
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 48, c8.mainTexGlId());
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 52, c8.internalGlFormat());
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 56, c7.mainTexGlId());
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 60, c7.internalGlFormat());
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 64, cfg.denoiseTemporalBlend);
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 68, cfg.denoiseStrength);
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 72, atrousPasses);
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 76, 1); // preserveAlpha (sample count in .a)
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 80, 1); // demodulateAlbedo
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 84, 1); // normalsAreWorld
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 88, cameraTracker.cameraNear());
-                dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 92, cameraTracker.cameraFar());
+                int albTexId = 0;
+                int albFmt = 0;
+                int normTexId = 0;
+                int normFmt = 0;
+
+                if (useTopLeftVk) {
+                    targets.ensureRenderTextures(cw, ch, GL30.GL_RGBA16F);
+                    quadPass.runMotionVectorPass(
+                        c5.mainTexGlId(),
+                        irisDepthGl,
+                        activeMcReverseZ,
+                        activeMcZeroToOne,
+                        jx,
+                        jy,
+                        dhSnapshot,
+                        hasDh,
+                        cameraTracker,
+                        targets.colorInTex(),
+                        targets.preDepthTex(),
+                        targets.preMvecTex(),
+                        cw,
+                        ch
+                    );
+                    if (irisGuidesCapturedThisFrame) {
+                        albTexId = targets.diffuseAlbedoTex();
+                        albFmt = targets.guideDiffuseFmt();
+                        normTexId = targets.normalsTex();
+                        normFmt = targets.guideNormalsFmt();
+                    }
+                } else {
+                    quadPass.runPreTonemapDepthMvPass(
+                        irisDepthGl,
+                        activeMcReverseZ,
+                        activeMcZeroToOne,
+                        jx,
+                        jy,
+                        dhSnapshot,
+                        hasDh,
+                        cameraTracker,
+                        targets.preDepthTex(),
+                        targets.preMvecTex(),
+                        cw,
+                        ch
+                    );
+                    if (cfg.gbufferGuideMode != GbufferGuideMode.NONE
+                            && cfg.gbufferGuideMode != GbufferGuideMode.SYNTHETIC) {
+                        albTexId = c8.mainTexGlId();
+                        albFmt = c8.internalGlFormat();
+                        normTexId = c7.mainTexGlId();
+                        normFmt = c7.internalGlFormat();
+                    }
+                }
+
+                MemorySegment dseg = populatePreTonemapSegment(
+                    cfg, c5.mainTexGlId(), cw, ch, cfmt,
+                    albTexId, albFmt, normTexId, normFmt,
+                    useTopLeftVk, wantPreRr, jx, jy
+                );
 
                 int rc = LinRtxNative.evaluateDenoise(dseg);
                 if (rc == 0) {
@@ -503,9 +545,85 @@ public final class LinRtxPipeline {
                     preTonemapBackupW = cw;
                     preTonemapBackupH = ch;
                     preTonemapDenoisedThisFrame = true;
+                    statusSnapshot = LinRtxNative.getStatus();
+                    preTonemapRrUsedThisFrame = statusSnapshot.dlssdActive();
                 }
             }
         }
+    }
+
+    private boolean preTonemapRrUsedThisFrame = false;
+    private boolean wasF1HideGuiIris = false;
+    private boolean activeF1HideGui = false;
+
+    private MemorySegment populatePreTonemapSegment(
+        LinRtxConfig cfg,
+        int outColortex5GlId,
+        int cw,
+        int ch,
+        int cfmt,
+        int albTexId,
+        int albFmt,
+        int normTexId,
+        int normFmt,
+        boolean useTopLeftVk,
+        boolean wantPreRr,
+        float jx,
+        float jy
+    ) {
+        int atrousPasses = (cfg.denoiseMode == DenoiseMode.SVGF_FAST)
+            ? Math.min(2, cfg.denoiseAtrousPasses)
+            : cfg.denoiseAtrousPasses;
+        int effDenoiseMode = (cfg.denoiseMode != DenoiseMode.OFF)
+            ? cfg.denoiseMode.nativeId
+            : (wantPreRr ? DenoiseMode.SVGF_ATROUS.nativeId : DenoiseMode.OFF.nativeId);
+
+        MemorySegment dseg = LinRtxNative.scratchDenoiseConfig();
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 4, cw);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 8, ch);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 12, cameraTracker.isResetPending() ? 1 : 0);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 16, targets.rawHdrBackupTex());
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 20, cfmt);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 24, outColortex5GlId);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 28, cfmt);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 32, targets.preDepthTex());
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 36, GL30.GL_R32F);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 40, targets.preMvecTex());
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 44, GL30.GL_RG16F);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 48, albTexId);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 52, albFmt);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 56, normTexId);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 60, normFmt);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 64, cfg.denoiseTemporalBlend);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 68, cfg.denoiseStrength);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 72, atrousPasses);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 76, 1); // preserveAlpha (sample count in .a)
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 80, albTexId > 0 ? 1 : 0);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 84, normTexId > 0 ? 1 : 0);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 88, cameraTracker.cameraNear());
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 92, cameraTracker.cameraFar());
+
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 96,
+            (useTopLeftVk && wantPreRr) ? cfg.rrMode.nativeId : RayReconstructionMode.OFF.nativeId);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 100, cfg.rrPreset.nativeId);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 104, effDenoiseMode);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 108, useTopLeftVk ? 1 : 0);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_INT, 112, activeF1HideGui ? 1 : 0);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 116, (float) cfg.f1AccumFadeSamples);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 120, jx);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 124, jy);
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 128, cameraTracker.cameraFovRadians());
+        dseg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 132, cameraTracker.cameraAspect());
+        LinRtxNative.putFloatArray(dseg, 136, cameraTracker.cameraPos(), 3);
+        LinRtxNative.putFloatArray(dseg, 148, cameraTracker.cameraUp(), 3);
+        LinRtxNative.putFloatArray(dseg, 160, cameraTracker.cameraRight(), 3);
+        LinRtxNative.putFloatArray(dseg, 172, cameraTracker.cameraFwd(), 3);
+        LinRtxNative.putFloatArray(dseg, 184, cameraTracker.viewToClipVk(), 16);
+        LinRtxNative.putFloatArray(dseg, 248, cameraTracker.clipToViewVk(), 16);
+        LinRtxNative.putFloatArray(dseg, 312, cameraTracker.clipToPrevClipVk(), 16);
+        LinRtxNative.putFloatArray(dseg, 376, cameraTracker.prevClipToClipVk(), 16);
+        LinRtxNative.putFloatArray(dseg, 440, cameraTracker.worldToViewRowMajor(), 16);
+        return dseg;
     }
 
     private void restorePreTonemapBackupIfPending() {
@@ -525,20 +643,6 @@ public final class LinRtxPipeline {
             dhConsumedThisFrame = true;
         }
         return dhHasDataThisFrame;
-    }
-
-    private boolean willUseDlssRrStage1(LinRtxConfig cfg, boolean guidesCaptured) {
-        if (!nativeReady || !statusSnapshot.dlssdSupported() || cfg.dlssMode == DlssMode.OFF) {
-            return false;
-        }
-        if (cfg.rrMode == RayReconstructionMode.ON) {
-            return true;
-        }
-        if (cfg.rrMode == RayReconstructionMode.AUTO) {
-            return cfg.gbufferGuideMode != GbufferGuideMode.NONE
-                && (guidesCaptured || cfg.gbufferGuideMode == GbufferGuideMode.SYNTHETIC);
-        }
-        return false;
     }
 
     /**
@@ -597,7 +701,8 @@ public final class LinRtxPipeline {
 
         boolean needDlss = cfg.dlssMode != DlssMode.OFF;
         boolean needStage1Denoise = (cfg.denoiseMode != DenoiseMode.OFF) && !preTonemapDenoisedThisFrame;
-        boolean needStage1 = needDlss || needStage1Denoise;
+        boolean needNeural = cfg.neuralMode != NeuralEngineMode.OFF;
+        boolean needStage1 = needDlss || needStage1Denoise || needNeural;
         boolean needFg = cfg.fgMode != FrameGenMode.OFF;
         boolean needMvPass = (needStage1 || needFg) && worldColorGl > 0 && worldDepthGl > 0;
 
@@ -611,8 +716,8 @@ public final class LinRtxPipeline {
                 worldDepthGl,
                 activeMcReverseZ,
                 activeMcZeroToOne,
-                jitter.currentX(),
-                jitter.currentY(),
+                activeF1HideGui ? 0.0f : jitter.currentX(),
+                activeF1HideGui ? 0.0f : jitter.currentY(),
                 dhSnapshot,
                 hasDh,
                 cameraTracker,
@@ -815,8 +920,8 @@ public final class LinRtxPipeline {
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 36, cfg.hdrOutputMode.nativeId);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 40, cfg.presentBackend.nativeId);
         seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 44, cfg.sharpness);
-        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 48, jitter.currentX());
-        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 52, jitter.currentY());
+        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 48, activeF1HideGui ? 0.0f : jitter.currentX());
+        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 52, activeF1HideGui ? 0.0f : jitter.currentY());
         seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 56, (float) activeRenderW);
         seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 60, (float) activeRenderH);
         seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 64, lastFrameTimeMs);
@@ -866,7 +971,8 @@ public final class LinRtxPipeline {
 
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 464,
             allowStage1Denoise ? cfg.denoiseMode.nativeId : DenoiseMode.OFF.nativeId);
-        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 468, cfg.rrMode.nativeId);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 468,
+            preTonemapDenoisedThisFrame ? RayReconstructionMode.OFF.nativeId : cfg.rrMode.nativeId);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 472, cfg.rrPreset.nativeId);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 476, useGbufferGuides ? 1 : 0);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 480, supplyExplicitGuides ? 1 : 0);
@@ -881,9 +987,23 @@ public final class LinRtxPipeline {
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 516, supplyExplicitGuides ? targets.guideNormalsFmt() : 0);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 520, supplyExplicitGuides ? targets.roughnessTex() : 0);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 524, supplyExplicitGuides ? targets.guideRoughFmt() : 0);
-        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 528, 0);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 528,
+            preTonemapRrUsedThisFrame ? LinRtxNative.LINRTX_FRAME_FLAG_PRETONEMAP_RR_ACTIVE : 0);
         LinRtxNative.putFloatArray(seg, 532, cameraTracker.worldToViewRowMajor(), 16);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 596, 0);
+
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 600, cfg.neuralMode.nativeId);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 604, cfg.neuralStyle.nativeId);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 608, cfg.neuralPreset.nativeId);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 612, cfg.neuralPlacement.nativeId);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 616, cfg.neuralUnlockAnyRtx ? 1 : 0);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 620, cfg.neuralUseAutoMask ? 1 : 0);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 624, cfg.neuralWorkingScale);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 628, cfg.neuralIntensity);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 632, cfg.neuralLocalToneStrength);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 636, cfg.neuralLocalStructureStrength);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 640, cfg.neuralSkinStructureStrength);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 644, 0);
         return seg;
     }
 

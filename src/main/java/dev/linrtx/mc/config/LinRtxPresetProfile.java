@@ -18,7 +18,9 @@ public final class LinRtxPresetProfile {
         HdrEngineMode hdrEngine,
         HdrTonePreset hdrTonePreset,
         DenoiseMode denoiseMode,
-        RayReconstructionMode rrMode
+        RayReconstructionMode rrMode,
+        NeuralEngineMode neuralMode,
+        NeuralStyle neuralStyle
     ) {
         public Bundle(
             String name,
@@ -31,7 +33,23 @@ public final class LinRtxPresetProfile {
             HdrTonePreset hdrTonePreset
         ) {
             this(name, subtitle, dlssMode, dlssPreset, sharpness, fgMode, hdrEngine, hdrTonePreset,
-                DenoiseMode.OFF, RayReconstructionMode.AUTO);
+                DenoiseMode.OFF, RayReconstructionMode.AUTO, NeuralEngineMode.OFF, NeuralStyle.DEFAULT);
+        }
+
+        public Bundle(
+            String name,
+            String subtitle,
+            DlssMode dlssMode,
+            DlssPreset dlssPreset,
+            float sharpness,
+            FrameGenMode fgMode,
+            HdrEngineMode hdrEngine,
+            HdrTonePreset hdrTonePreset,
+            DenoiseMode denoiseMode,
+            RayReconstructionMode rrMode
+        ) {
+            this(name, subtitle, dlssMode, dlssPreset, sharpness, fgMode, hdrEngine, hdrTonePreset,
+                denoiseMode, rrMode, NeuralEngineMode.OFF, NeuralStyle.DEFAULT);
         }
     }
 
@@ -47,8 +65,14 @@ public final class LinRtxPresetProfile {
             DlssMode.BALANCED, DlssPreset.M, 0.25f, FrameGenMode.X2, HdrEngineMode.AUTO, HdrTonePreset.CINEMATIC
         ),
         new Bundle(
+            "DLSS 5 Neural Cinematic (Any RTX)",
+            "Balanced Preset M + DLSS 5 Neural Engine Filter (Unlocked) + 2x FG",
+            DlssMode.BALANCED, DlssPreset.M, 0.15f, FrameGenMode.X2, HdrEngineMode.AUTO, HdrTonePreset.CINEMATIC,
+            DenoiseMode.OFF, RayReconstructionMode.AUTO, NeuralEngineMode.AUTO, NeuralStyle.CINEMATIC
+        ),
+        new Bundle(
             "Path Tracing / Camellia (DLSS-RR + SVGF)",
-            "Quality 0.67x, DLSS-RR Auto + SVGF Pre-Tonemap Fallback + Natural HDR",
+            "Quality 0.67x, Pre-Tonemap DLSS-RR / SVGF + F1 Accum Boost + Natural HDR",
             DlssMode.QUALITY, DlssPreset.K, 0.15f, FrameGenMode.X2, HdrEngineMode.AUTO, HdrTonePreset.NATURAL,
             DenoiseMode.SVGF_ATROUS, RayReconstructionMode.AUTO
         ),
@@ -66,7 +90,7 @@ public final class LinRtxPresetProfile {
             "Vanilla Passthrough",
             "All LinRTX features bypassed (1x native OpenGL)",
             DlssMode.OFF, DlssPreset.DEFAULT, 0.0f, FrameGenMode.OFF, HdrEngineMode.OFF, HdrTonePreset.CUSTOM,
-            DenoiseMode.OFF, RayReconstructionMode.OFF
+            DenoiseMode.OFF, RayReconstructionMode.OFF, NeuralEngineMode.OFF, NeuralStyle.DEFAULT
         )
     );
 
@@ -84,6 +108,8 @@ public final class LinRtxPresetProfile {
         cfg.hdrEngine = b.hdrEngine();
         cfg.denoiseMode = b.denoiseMode();
         cfg.rrMode = b.rrMode();
+        cfg.neuralMode = b.neuralMode();
+        cfg.neuralStyle = b.neuralStyle();
         cfg.applyHdrPreset(b.hdrTonePreset());
         cfg.clamp();
         cfg.save();

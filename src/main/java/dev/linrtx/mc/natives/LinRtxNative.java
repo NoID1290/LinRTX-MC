@@ -15,7 +15,7 @@ import java.nio.file.Path;
 public final class LinRtxNative {
     private static final Logger LOGGER = LoggerFactory.getLogger("LinRTX");
 
-    // LinRtxInitConfig (72 bytes)
+    // LinRtxInitConfig (80 bytes)
     public static final StructLayout INIT_CONFIG_LAYOUT = MemoryLayout.structLayout(
         ValueLayout.JAVA_INT.withName("structSize"),            // 0
         ValueLayout.JAVA_INT.withName("enableValidation"),      // 4
@@ -27,10 +27,11 @@ public final class LinRtxNative {
         ValueLayout.JAVA_INT.withName("reserved0"),             // 44
         ValueLayout.ADDRESS.withName("ngxLibDir"),              // 48
         ValueLayout.ADDRESS.withName("trueHdrSearchDirs"),      // 56
-        ValueLayout.ADDRESS.withName("logDir")                  // 64
+        ValueLayout.ADDRESS.withName("logDir"),                 // 64
+        ValueLayout.ADDRESS.withName("neuralSearchDirs")        // 72
     );
 
-    // LinRtxFrameConfig (464 bytes)
+    // LinRtxFrameConfig (648 bytes)
     public static final StructLayout FRAME_CONFIG_LAYOUT = MemoryLayout.structLayout(
         ValueLayout.JAVA_INT.withName("structSize"),            // 0
         ValueLayout.JAVA_INT.withName("renderWidth"),           // 4
@@ -98,10 +99,24 @@ public final class LinRtxNative {
         ValueLayout.JAVA_INT.withName("roughnessFormatGl"),     // 524
         ValueLayout.JAVA_INT.withName("flagsReserved0"),        // 528
         MemoryLayout.sequenceLayout(16, ValueLayout.JAVA_FLOAT).withName("worldToView"), // 532
-        ValueLayout.JAVA_INT.withName("flagsReserved1")         // 596
+        ValueLayout.JAVA_INT.withName("flagsReserved1"),        // 596
+        ValueLayout.JAVA_INT.withName("neuralMode"),            // 600
+        ValueLayout.JAVA_INT.withName("neuralStyle"),           // 604
+        ValueLayout.JAVA_INT.withName("neuralPreset"),          // 608
+        ValueLayout.JAVA_INT.withName("neuralPlacement"),       // 612
+        ValueLayout.JAVA_INT.withName("neuralUnlockAnyRtx"),    // 616
+        ValueLayout.JAVA_INT.withName("neuralUseAutoMask"),     // 620
+        ValueLayout.JAVA_FLOAT.withName("neuralWorkingScale"),  // 624
+        ValueLayout.JAVA_FLOAT.withName("neuralIntensity"),     // 628
+        ValueLayout.JAVA_FLOAT.withName("neuralLocalToneStrength"),     // 632
+        ValueLayout.JAVA_FLOAT.withName("neuralLocalStructureStrength"),// 636
+        ValueLayout.JAVA_FLOAT.withName("neuralSkinStructureStrength"), // 640
+        ValueLayout.JAVA_INT.withName("neuralReserved0")        // 644
     );
 
-    // LinRtxDenoiseConfig (96 bytes)
+    public static final int LINRTX_FRAME_FLAG_PRETONEMAP_RR_ACTIVE = 1 << 0;
+
+    // LinRtxDenoiseConfig (504 bytes)
     public static final StructLayout DENOISE_CONFIG_LAYOUT = MemoryLayout.structLayout(
         ValueLayout.JAVA_INT.withName("structSize"),            // 0
         ValueLayout.JAVA_INT.withName("width"),                 // 4
@@ -126,10 +141,29 @@ public final class LinRtxNative {
         ValueLayout.JAVA_INT.withName("demodulateAlbedo"),      // 80
         ValueLayout.JAVA_INT.withName("normalsAreWorld"),       // 84
         ValueLayout.JAVA_FLOAT.withName("cameraNear"),          // 88
-        ValueLayout.JAVA_FLOAT.withName("cameraFar")            // 92
+        ValueLayout.JAVA_FLOAT.withName("cameraFar"),           // 92
+        ValueLayout.JAVA_INT.withName("rrMode"),                // 96
+        ValueLayout.JAVA_INT.withName("rrPreset"),              // 100
+        ValueLayout.JAVA_INT.withName("denoiseMode"),           // 104
+        ValueLayout.JAVA_INT.withName("inputsTopLeftVk"),       // 108
+        ValueLayout.JAVA_INT.withName("f1AccumActive"),         // 112
+        ValueLayout.JAVA_FLOAT.withName("f1FadeSamples"),       // 116
+        ValueLayout.JAVA_FLOAT.withName("jitterOffsetX"),       // 120
+        ValueLayout.JAVA_FLOAT.withName("jitterOffsetY"),       // 124
+        ValueLayout.JAVA_FLOAT.withName("cameraFovRadians"),    // 128
+        ValueLayout.JAVA_FLOAT.withName("cameraAspect"),        // 132
+        MemoryLayout.sequenceLayout(3, ValueLayout.JAVA_FLOAT).withName("cameraPos"),     // 136
+        MemoryLayout.sequenceLayout(3, ValueLayout.JAVA_FLOAT).withName("cameraUp"),      // 148
+        MemoryLayout.sequenceLayout(3, ValueLayout.JAVA_FLOAT).withName("cameraRight"),   // 160
+        MemoryLayout.sequenceLayout(3, ValueLayout.JAVA_FLOAT).withName("cameraFwd"),     // 172
+        MemoryLayout.sequenceLayout(16, ValueLayout.JAVA_FLOAT).withName("viewToClip"),   // 184
+        MemoryLayout.sequenceLayout(16, ValueLayout.JAVA_FLOAT).withName("clipToView"),   // 248
+        MemoryLayout.sequenceLayout(16, ValueLayout.JAVA_FLOAT).withName("clipToPrevClip"),// 312
+        MemoryLayout.sequenceLayout(16, ValueLayout.JAVA_FLOAT).withName("prevClipToClip"),// 376
+        MemoryLayout.sequenceLayout(16, ValueLayout.JAVA_FLOAT).withName("worldToView")   // 440..504
     );
 
-    // LinRtxStatus (1104 bytes)
+    // LinRtxStatus (1352 bytes)
     public static final StructLayout STATUS_LAYOUT = MemoryLayout.structLayout(
         ValueLayout.JAVA_INT.withName("structSize"),            // 0
         ValueLayout.JAVA_INT.withName("vkReady"),               // 4
@@ -159,7 +193,16 @@ public final class LinRtxNative {
         ValueLayout.JAVA_INT.withName("denoiserActive"),        // 904
         ValueLayout.JAVA_INT.withName("activeRrPreset"),        // 908
         MemoryLayout.sequenceLayout(64, ValueLayout.JAVA_BYTE).withName("dlssdVersion"),    // 912
-        MemoryLayout.sequenceLayout(128, ValueLayout.JAVA_BYTE).withName("denoiserStatus")  // 976
+        MemoryLayout.sequenceLayout(128, ValueLayout.JAVA_BYTE).withName("denoiserStatus"), // 976
+        ValueLayout.JAVA_INT.withName("dlssnrNgxLoaded"),       // 1104
+        ValueLayout.JAVA_INT.withName("dlssnrNgxSupported"),    // 1108
+        ValueLayout.JAVA_INT.withName("dlssnrActive"),          // 1112
+        ValueLayout.JAVA_INT.withName("dlssnrUsingNgx"),        // 1116
+        ValueLayout.JAVA_INT.withName("dlssnrUnlocked"),        // 1120
+        ValueLayout.JAVA_INT.withName("activeNeuralPreset"),    // 1124
+        MemoryLayout.sequenceLayout(32, ValueLayout.JAVA_BYTE).withName("gpuArchName"),     // 1128
+        MemoryLayout.sequenceLayout(64, ValueLayout.JAVA_BYTE).withName("dlssnrVersion"),   // 1160
+        MemoryLayout.sequenceLayout(128, ValueLayout.JAVA_BYTE).withName("dlssnrStatus")    // 1224
     );
 
     public record StatusSnapshot(
@@ -190,12 +233,22 @@ public final class LinRtxNative {
         boolean denoiserActive,
         int activeRrPreset,
         String dlssdVersion,
-        String denoiserStatus
+        String denoiserStatus,
+        boolean dlssnrNgxLoaded,
+        boolean dlssnrNgxSupported,
+        boolean dlssnrActive,
+        boolean dlssnrUsingNgx,
+        boolean dlssnrUnlocked,
+        int activeNeuralPreset,
+        String gpuArchName,
+        String dlssnrVersion,
+        String dlssnrStatus
     ) {
         public static final StatusSnapshot EMPTY = new StatusSnapshot(
             false, false, false, false, false, false, false, false, false, false, false,
             1, 0, 0, 0, "Not initialized", "-", "-", "-", "Inactive", "OpenGL Swap", "",
-            false, false, false, 0, "-", "Inactive"
+            false, false, false, 0, "-", "Inactive",
+            false, false, false, false, false, 0, "-", "-", "Off"
         );
     }
 
@@ -296,6 +349,23 @@ public final class LinRtxNative {
         String trueHdrSearchDirs,
         String logDir
     ) {
+        return init(
+            enableValidation, windowHandle, nativeDisplayPtr, nativeWindowHandle,
+            isWayland, ngxLibDir, trueHdrSearchDirs, logDir, trueHdrSearchDirs
+        );
+    }
+
+    public static int init(
+        boolean enableValidation,
+        long windowHandle,
+        long nativeDisplayPtr,
+        long nativeWindowHandle,
+        boolean isWayland,
+        String ngxLibDir,
+        String trueHdrSearchDirs,
+        String logDir,
+        String neuralSearchDirs
+    ) {
         if (!loaded) return -1;
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment seg = arena.allocate(INIT_CONFIG_LAYOUT);
@@ -310,6 +380,7 @@ public final class LinRtxNative {
             seg.set(ValueLayout.ADDRESS, 48, arena.allocateFrom(ngxLibDir != null ? ngxLibDir : ""));
             seg.set(ValueLayout.ADDRESS, 56, arena.allocateFrom(trueHdrSearchDirs != null ? trueHdrSearchDirs : ""));
             seg.set(ValueLayout.ADDRESS, 64, arena.allocateFrom(logDir != null ? logDir : "/tmp"));
+            seg.set(ValueLayout.ADDRESS, 72, arena.allocateFrom(neuralSearchDirs != null ? neuralSearchDirs : ""));
             return (int) mhInit.invokeExact(seg);
         } catch (Throwable t) {
             loadError = t.getMessage();
@@ -438,7 +509,16 @@ public final class LinRtxNative {
                 statusSeg.get(ValueLayout.JAVA_INT, 904) != 0,
                 statusSeg.get(ValueLayout.JAVA_INT, 908),
                 readCString(statusSeg, 912, 64),
-                readCString(statusSeg, 976, 128)
+                readCString(statusSeg, 976, 128),
+                statusSeg.get(ValueLayout.JAVA_INT, 1104) != 0,
+                statusSeg.get(ValueLayout.JAVA_INT, 1108) != 0,
+                statusSeg.get(ValueLayout.JAVA_INT, 1112) != 0,
+                statusSeg.get(ValueLayout.JAVA_INT, 1116) != 0,
+                statusSeg.get(ValueLayout.JAVA_INT, 1120) != 0,
+                statusSeg.get(ValueLayout.JAVA_INT, 1124),
+                readCString(statusSeg, 1128, 32),
+                readCString(statusSeg, 1160, 64),
+                readCString(statusSeg, 1224, 128)
             );
         } catch (Throwable t) {
             return StatusSnapshot.EMPTY;

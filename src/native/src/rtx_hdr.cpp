@@ -6,7 +6,6 @@
 
 #include <dlfcn.h>
 #include <filesystem>
-#include <sstream>
 #include <vector>
 #include <cstdio>
 
@@ -39,27 +38,10 @@ struct RtxHdrPushConstants {
 };
 static_assert(sizeof(RtxHdrPushConstants) == 48);
 
-std::vector<std::string> splitSearchDirs(const char* raw) {
-    std::vector<std::string> dirs;
-    if (!raw || !*raw) return dirs;
-    std::string s(raw);
-    for (char& ch : s) {
-        if (ch == ';') ch = ':';
-    }
-    std::stringstream ss(s);
-    std::string item;
-    while (std::getline(ss, item, ':')) {
-        if (!item.empty()) {
-            dirs.push_back(item);
-        }
-    }
-    return dirs;
-}
-
 } // namespace
 
 bool RtxHdrEngine::discoverTrueHdr(const char* searchDirs) {
-    std::vector<std::string> dirs = splitSearchDirs(searchDirs);
+    std::vector<std::string> dirs = VkNgxContext::splitSearchDirs(searchDirs);
 
     static constexpr const char* kCandidates[] = {
         "libnvidia-ngx-truehdr.so",

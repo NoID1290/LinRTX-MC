@@ -151,8 +151,12 @@ void main() {
             validHistory = false;
         } else {
             prevIrr = sanitizeVec3(textureLod(uHistoryColorTex, prevUv, 0.0).rgb);
-            // Soft neighborhood variance box clamp to kill ghosting on moving shadows/entities
+            // Soft neighborhood variance box clamp: widen gently on static converged frames
+            // so 1-SPP path-traced dark rooms do not reset accumulated indirect illumination.
             float clampWidth = mix(2.2, 3.8, clamp(pc.strength, 0.25, 2.5) / 2.5);
+            if (prevMom.z >= 4.0 && relDepthDiff < 0.03) {
+                clampWidth += min(2.2, (prevMom.z - 3.0) * 0.14);
+            }
             vec3 boxMin = max(vec3(0.0), meanVec - stdVec * clampWidth);
             vec3 boxMax = meanVec + stdVec * clampWidth;
             prevIrr = clamp(prevIrr, boxMin, boxMax);
@@ -165,6 +169,9 @@ void main() {
 
     float newLen = validHistory ? min(32.0, prevLen + 1.0) : 1.0;
     float maxHist = clamp(pc.temporalBlend, 0.0, 0.96);
+    if (validHistory && prevLen >= 6.0 && maxHist >= 0.80) {
+        maxHist = min(0.975, maxHist + 0.06);
+    }
     float minAlpha = 1.0 - maxHist;
     float alpha = max(minAlpha, 1.0 / newLen);
 
