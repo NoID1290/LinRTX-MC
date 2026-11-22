@@ -67,6 +67,7 @@ private:
     uint32_t statsW_ = 0;
     uint32_t statsH_ = 0;
     bool historyValid_ = false;
+    bool loggedFirstEval_ = false;
     uint64_t frameCounter_ = 0;
 
     void* dlssnrDlHandle_ = nullptr;

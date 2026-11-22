@@ -313,8 +313,8 @@ public final class GlQuadPass {
             uploadMat4(uMcInvProj, cam.mcInvProjGl());
             uploadMat4(uViewToPrevClip, cam.glViewToPrevClip());
 
-            float jNdcX = (width > 0) ? (-2.0f * jitterX / (float) width) : 0.0f;
-            float jNdcY = (height > 0) ? (2.0f * jitterY / (float) height) : 0.0f;
+            float jNdcX = HaltonJitter.ndcOffsetX(jitterX, width);
+            float jNdcY = HaltonJitter.ndcOffsetY(jitterY, height);
             GL20.glUniform2f(uJitterNdc, jNdcX, jNdcY);
             GL20.glUniform1f(uMcNear, cam.cameraNear());
             GL20.glUniform1f(uMcFar, cam.cameraFar());

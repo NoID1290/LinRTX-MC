@@ -12,13 +12,54 @@ class HaltonAndCameraMathTest {
     @Test
     void haltonJitterBoundsAndCycleLength() {
         HaltonJitter jitter = new HaltonJitter();
-        assertEquals(8, HaltonJitter.computeCycleLength(1920, 1920));
-        assertTrue(HaltonJitter.computeCycleLength(1280, 3840) >= 64);
+        assertEquals(16, HaltonJitter.computeCycleLength(1920, 1920));
+        assertEquals(72, HaltonJitter.computeCycleLength(1280, 3840));
 
         for (int i = 0; i < 64; i++) {
             jitter.advance(1708, 2560);
             assertTrue(jitter.currentX() >= -0.5f && jitter.currentX() < 0.5f);
             assertTrue(jitter.currentY() >= -0.5f && jitter.currentY() < 0.5f);
+        }
+    }
+
+    @Test
+    void projectionJitterMatchesNgxVulkanSignAndMotionVectorUnjitter() {
+        int renderW = 1280;
+        int renderH = 720;
+        HaltonJitter jitter = new HaltonJitter();
+        Matrix4f baseProj = new Matrix4f().perspective((float) Math.toRadians(70.0), (float) renderW / renderH, 0.05f, 256.0f, true);
+        Vector4f viewPt = new Vector4f(0.75f, -0.4f, -4.0f, 1.0f);
+
+        Vector4f baseClip = new Vector4f(viewPt).mul(baseProj);
+        float baseNdcX = baseClip.x / baseClip.w;
+        float baseNdcY = baseClip.y / baseClip.w;
+        float baseVkPxX = (baseNdcX * 0.5f + 0.5f) * renderW;
+        float baseVkPxY = (0.5f - baseNdcY * 0.5f) * renderH;
+
+        for (int frame = 0; frame < 16; frame++) {
+            jitter.advance(renderW, renderW);
+            float jx = jitter.currentX();
+            float jy = jitter.currentY();
+
+            Matrix4f jitProj = new Matrix4f(baseProj);
+            jitter.applyProjectionJitter(jitProj, renderW, renderH);
+
+            Vector4f jitClip = new Vector4f(viewPt).mul(jitProj);
+            float jitNdcX = jitClip.x / jitClip.w;
+            float jitNdcY = jitClip.y / jitClip.w;
+            float jitVkPxX = (jitNdcX * 0.5f + 0.5f) * renderW;
+            float jitVkPxY = (0.5f - jitNdcY * 0.5f) * renderH;
+
+            // NVIDIA NGX DLSS-SR / DLSS-RR expects InJitterOffset = (+jx, +jy) to match
+            // geometry displacement (+jx, +jy) in Vulkan top-left pixel coordinates.
+            assertEquals(jx, jitVkPxX - baseVkPxX, 1e-3f, "Vulkan X geometry shift must equal +jx");
+            assertEquals(jy, jitVkPxY - baseVkPxY, 1e-3f, "Vulkan Y geometry shift must equal +jy");
+
+            // GlQuadPass subtracts uJitterNdc to recover unjittered NDC (zero static-camera MV).
+            float unjNdcX = jitNdcX - HaltonJitter.ndcOffsetX(jx, renderW);
+            float unjNdcY = jitNdcY - HaltonJitter.ndcOffsetY(jy, renderH);
+            assertEquals(baseNdcX, unjNdcX, 1e-5f, "Motion-vector unjitter must recover base NDC X");
+            assertEquals(baseNdcY, unjNdcY, 1e-5f, "Motion-vector unjitter must recover base NDC Y");
         }
     }
 

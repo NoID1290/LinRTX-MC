@@ -198,6 +198,7 @@ void DlssNrEngine::destroy(VkNgxContext& ctx) {
     statsW_ = 0;
     statsH_ = 0;
     historyValid_ = false;
+    loggedFirstEval_ = false;
     frameCounter_ = 0;
     dlssnrProbed_ = false;
     dlssnrLibPresent_ = false;
@@ -424,6 +425,11 @@ bool DlssNrEngine::evaluateNgxFeature18(VkNgxContext& ctx,
     }
     statusStr_ = std::string("NGX Feature 18 (") + styleLabel(frame.neuralStyle) +
                  (frame.neuralUnlockAnyRtx ? ", Unlocked)" : ")");
+    if (!loggedFirstEval_) {
+        loggedFirstEval_ = true;
+        logNative("dlssNr: first evaluate succeeded backend=NGX_F18 %ux%u style=%s intensity=%.2f",
+                  srcColor.width, srcColor.height, styleLabel(frame.neuralStyle), frame.neuralIntensity);
+    }
     return true;
 }
 
@@ -544,6 +550,11 @@ bool DlssNrEngine::evaluateVulkanNeural(VkNgxContext& ctx,
         statusStr_ = std::string("Vulkan Neural Filter (") + styleLabel(frame.neuralStyle) + ", " + arch + "; PE DLL ignored)";
     } else {
         statusStr_ = std::string("Vulkan Neural Filter (") + styleLabel(frame.neuralStyle) + ", " + arch + ")";
+    }
+    if (!loggedFirstEval_) {
+        loggedFirstEval_ = true;
+        logNative("dlssNr: first evaluate succeeded backend=VulkanNeural5 %ux%u (work %ux%u) style=%s intensity=%.2f",
+                  srcColor.width, srcColor.height, workW, workH, styleLabel(frame.neuralStyle), frame.neuralIntensity);
     }
     return true;
 }

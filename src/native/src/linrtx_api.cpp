@@ -342,10 +342,11 @@ int32_t linrtx_evaluate_dlss(const LinRtxFrameConfig* frame) {
     const bool wantDenoise = (frame->denoiseMode != LINRTX_DENOISE_OFF);
     const bool wantUpscale = (frame->dlssMode != LINRTX_DLSS_OFF);
     const bool wantNeural = (frame->neuralMode != LINRTX_NEURAL_OFF);
+    const bool wantSharpen = (frame->sharpness > 0.001f);
     if (!wantNeural) {
         std::snprintf(s.status.dlssnrStatus, sizeof(s.status.dlssnrStatus), "Off");
     }
-    if ((!wantUpscale && !wantDenoise && !wantNeural) || !frame->colorInTexGlId || !frame->depthInTexGlId ||
+    if ((!wantUpscale && !wantDenoise && !wantNeural && !wantSharpen) || !frame->colorInTexGlId || !frame->depthInTexGlId ||
         !frame->mvecInTexGlId || !frame->outUpscaledTexGlId) {
         return 0;
     }

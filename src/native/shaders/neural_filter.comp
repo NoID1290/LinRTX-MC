@@ -96,6 +96,28 @@ float computeOrganicSkinMask(vec3 lin) {
     return clamp(warmBias * satBand * lumaBand, 0.0, 1.0);
 }
 
+// Reconstruct approximate view-space normal from reverse-Z depth for directional material sheen
+vec3 reconstructDepthNormal(vec2 uv, vec2 invRes, float zC) {
+    float zR = linearizeDepth(textureLod(uDepthTex, clamp(uv + vec2(invRes.x, 0.0), 0.0, 1.0), 0.0).r);
+    float zL = linearizeDepth(textureLod(uDepthTex, clamp(uv - vec2(invRes.x, 0.0), 0.0, 1.0), 0.0).r);
+    float zD = linearizeDepth(textureLod(uDepthTex, clamp(uv + vec2(0.0, invRes.y), 0.0, 1.0), 0.0).r);
+    float zU = linearizeDepth(textureLod(uDepthTex, clamp(uv - vec2(0.0, invRes.y), 0.0, 1.0), 0.0).r);
+    float dzdx = (abs(zR - zC) < abs(zC - zL)) ? (zR - zC) : (zC - zL);
+    float dzdy = (abs(zD - zC) < abs(zC - zU)) ? (zD - zC) : (zC - zU);
+    float scale = max(zC * 0.0032, 1e-4);
+    vec3 n = vec3(-dzdx, dzdy, scale);
+    float l2 = dot(n, n);
+    return (l2 > 1e-10) ? (n * inversesqrt(l2)) : vec3(0.0, 0.0, 1.0);
+}
+
+// Soft filmic highlight roll-off (preserves color ratios without hard clipping)
+vec3 softShoulder(vec3 c) {
+    float l = luminance(c);
+    if (l <= 0.85) return c;
+    float mapped = 0.85 + (l - 0.85) / (1.0 + (l - 0.85) * 1.15);
+    return c * (mapped / max(l, 1e-5));
+}
+
 void main() {
     uvec2 px = gl_GlobalInvocationID.xy;
     if (px.x >= pc.width || px.y >= pc.height) return;
@@ -113,44 +135,63 @@ void main() {
     vec3 centerLin = (pc.inputIsHdr != 0u) ? centerSan : srgbToLinear(centerSan);
     float centerLuma = luminance(centerLin);
 
-    vec2 uv = (vec2(ipx) + 0.5) / vec2(float(pc.width), float(pc.height));
+    vec2 invRes = 1.0 / vec2(float(pc.width), float(pc.height));
+    vec2 uv = (vec2(ipx) + 0.5) * invRes;
     vec4 stats = textureLod(uWorkStatsTex, uv, 0.0);
     float localLogLuma = stats.r;
-    float localEnergy = clamp(stats.g, 0.0, 4.0);
-    float autoMask = (pc.useAutoMask != 0u) ? clamp(stats.b, 0.12, 1.0) : 1.0;
+    float contactAO = clamp(stats.g, 0.22, 1.0);
+    float autoMask = (pc.useAutoMask != 0u) ? clamp(stats.b, 0.15, 1.0) : 1.0;
 
     float rawDepth = textureLod(uDepthTex, uv, 0.0).r;
     bool sky = isSkyDepth(rawDepth);
     float zCenter = sky ? pc.farPlane : linearizeDepth(rawDepth);
 
-    // Style-specific tuning weights (0=Default, 1=Natural, 2=Cinematic)
+    // Style-specific neural relighting, AO, material relief, and color grading parameters
+    // 0 = Default (Neural Relight), 1 = Natural (Organic GI), 2 = Cinematic (Filmic Grade)
     float toneStyleScale = 1.00;
-    float structStyleScale = 1.00;
-    float satBoost = 1.00;
-    float filmicContrast = 0.00;
-    vec3 shadowTint = vec3(1.0);
-    vec3 highTint = vec3(1.0);
+    float structStyleScale = 0.85;
+    float aoStrength = 0.65;
+    float sheenStrength = 0.22;
+    float satBoost = 1.12;
+    float filmicContrast = 0.16;
+    float shadowFill = 0.12;
+    vec3 shadowTint = vec3(0.94, 0.98, 1.07);
+    vec3 highTint = vec3(1.06, 1.01, 0.94);
+    float hazeStrength = 0.04;
+    vec3 hazeColor = vec3(0.32, 0.42, 0.56);
+
     if (pc.style == 1u) {
-        // Natural: soft organic lighting relief & balanced vibrance
-        toneStyleScale = 0.85;
-        structStyleScale = 0.82;
-        satBoost = 1.06;
-        filmicContrast = 0.04;
+        // Natural: warm organic GI shadow lift, soft contact occlusion, lush sunlit vibrancy
+        toneStyleScale = 0.92;
+        structStyleScale = 0.68;
+        aoStrength = 0.50;
+        sheenStrength = 0.16;
+        satBoost = 1.18;
+        filmicContrast = 0.08;
+        shadowFill = 0.24;
+        shadowTint = vec3(1.02, 1.01, 0.97);
+        highTint = vec3(1.08, 1.03, 0.94);
+        hazeStrength = 0.05;
+        hazeColor = vec3(0.42, 0.48, 0.55);
     } else if (pc.style == 2u) {
-        // Cinematic: punchy local micro-contrast, deep shadow roll-off, rich material relief
-        toneStyleScale = 1.25;
-        structStyleScale = 1.15;
-        satBoost = 1.10;
-        filmicContrast = 0.14;
-        shadowTint = vec3(0.97, 0.99, 1.04);
-        highTint = vec3(1.03, 1.00, 0.96);
+        // Cinematic: dramatic deep-shadow contact AO, bold local lighting contrast, warm/cool split
+        toneStyleScale = 1.38;
+        structStyleScale = 1.05;
+        aoStrength = 0.90;
+        sheenStrength = 0.34;
+        satBoost = 1.16;
+        filmicContrast = 0.28;
+        shadowFill = 0.05;
+        shadowTint = vec3(0.86, 0.95, 1.14);
+        highTint = vec3(1.12, 1.01, 0.88);
+        hazeStrength = 0.08;
+        hazeColor = vec3(0.24, 0.34, 0.48);
     }
 
-    // 1. Edge-preserving joint-bilateral neighborhood for local structure & anti-ringing clamp
-    vec3 nbMin = centerLin;
-    vec3 nbMax = centerLin;
+    // 1. Edge-preserving micro-structure decomposition (for smooth material relief without aliasing)
     vec3 baseAccum = centerLin;
     float baseWeight = 1.0;
+    float maxDeltaLuma = 0.0;
 
     const ivec2 kCardinals[4] = ivec2[](
         ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1)
@@ -158,59 +199,38 @@ void main() {
     const ivec2 kDiagonals[4] = ivec2[](
         ivec2(-1, -1), ivec2(1, -1), ivec2(-1, 1), ivec2(1, 1)
     );
-    const ivec2 kRing2[4] = ivec2[](
-        ivec2(-2, 0), ivec2(2, 0), ivec2(0, -2), ivec2(0, 2)
-    );
 
-    float lumaSigma = max(0.035, centerLuma * 0.28 + localEnergy * 0.04);
+    float lumaSigma = max(0.045, centerLuma * 0.32);
 
     for (int i = 0; i < 4; ++i) {
         ivec2 sc = clamp(ipx + kCardinals[i], ivec2(0), maxCoord);
         vec3 s = fetchLinear(sc, maxCoord);
-        nbMin = min(nbMin, s);
-        nbMax = max(nbMax, s);
+        float dL = abs(luminance(s) - centerLuma);
+        maxDeltaLuma = max(maxDeltaLuma, dL);
 
-        vec2 suv = (vec2(sc) + 0.5) / vec2(float(pc.width), float(pc.height));
+        vec2 suv = (vec2(sc) + 0.5) * invRes;
         float sRawD = textureLod(uDepthTex, suv, 0.0).r;
         float sZ = isSkyDepth(sRawD) ? pc.farPlane : linearizeDepth(sRawD);
         float wZ = exp(-(abs(sZ - zCenter) / max(zCenter, 0.25)) * 12.0);
-        float dL = abs(luminance(s) - centerLuma);
         float wL = exp(-(dL * dL) / (2.0 * lumaSigma * lumaSigma));
         float w = wZ * wL * 0.65;
         baseAccum += s * w;
         baseWeight += w;
     }
 
-    for (int i = 0; i < 4; ++i) {
-        ivec2 sc = clamp(ipx + kDiagonals[i], ivec2(0), maxCoord);
-        vec3 s = fetchLinear(sc, maxCoord);
-        nbMin = min(nbMin, s);
-        nbMax = max(nbMax, s);
+    if (pc.presetMode != 2u) {
+        for (int i = 0; i < 4; ++i) {
+            ivec2 sc = clamp(ipx + kDiagonals[i], ivec2(0), maxCoord);
+            vec3 s = fetchLinear(sc, maxCoord);
+            float dL = abs(luminance(s) - centerLuma);
+            maxDeltaLuma = max(maxDeltaLuma, dL);
 
-        if (pc.presetMode != 2u) {
-            vec2 suv = (vec2(sc) + 0.5) / vec2(float(pc.width), float(pc.height));
+            vec2 suv = (vec2(sc) + 0.5) * invRes;
             float sRawD = textureLod(uDepthTex, suv, 0.0).r;
             float sZ = isSkyDepth(sRawD) ? pc.farPlane : linearizeDepth(sRawD);
             float wZ = exp(-(abs(sZ - zCenter) / max(zCenter, 0.25)) * 12.0);
-            float dL = abs(luminance(s) - centerLuma);
             float wL = exp(-(dL * dL) / (2.0 * lumaSigma * lumaSigma));
-            float w = wZ * wL * 0.42;
-            baseAccum += s * w;
-            baseWeight += w;
-        }
-    }
-
-    if (pc.presetMode != 2u) {
-        for (int i = 0; i < 4; ++i) {
-            ivec2 sc = clamp(ipx + kRing2[i], ivec2(0), maxCoord);
-            vec3 s = fetchLinear(sc, maxCoord);
-            vec2 suv = (vec2(sc) + 0.5) / vec2(float(pc.width), float(pc.height));
-            float sRawD = textureLod(uDepthTex, suv, 0.0).r;
-            float sZ = isSkyDepth(sRawD) ? pc.farPlane : linearizeDepth(sRawD);
-            float wZ = exp(-(abs(sZ - zCenter) / max(zCenter, 0.25)) * 10.0);
-            float dL = abs(luminance(s) - centerLuma);
-            float wL = exp(-(dL * dL) / (2.0 * lumaSigma * lumaSigma));
-            float w = wZ * wL * 0.24;
+            float w = wZ * wL * 0.40;
             baseAccum += s * w;
             baseWeight += w;
         }
@@ -219,59 +239,88 @@ void main() {
     vec3 localBase = baseAccum / max(baseWeight, 1e-4);
     vec3 detail = centerLin - localBase;
 
-    // 2. Local Tone Adaptation (multi-scale Dodge & Burn + highlight protection)
+    // 2. Wide-radius Neural Relighting + Contact AO + Bounced Shadow Fill
     float centerLog = log2(max(centerLuma, 1e-4));
-    float localDiff = clamp(centerLog - localLogLuma, -1.75, 1.75);
+    float localDiff = clamp(centerLog - localLogLuma, -2.5, 2.5);
     float toneStrength = clamp(pc.localToneStrength, 0.0, 2.0) * toneStyleScale * autoMask;
 
-    // Shadow-lift + midtone separation without blowing out bright highlights
-    float shadowLift = smoothstep(-3.8, -0.8, -centerLog) * (1.0 - smoothstep(0.60, 1.35, centerLuma));
-    float toneGainLog = localDiff * (0.28 * toneStrength)
-                      + (0.14 * toneStrength) * shadowLift * (1.0 - smoothstep(0.0, 1.1, localEnergy));
-    if (filmicContrast > 0.0) {
-        float sPivot = localLogLuma;
-        toneGainLog += (centerLog - sPivot) * filmicContrast * autoMask;
-    }
-    // Highlight shoulder protection
-    float hiProt = 1.0 - 0.65 * smoothstep(0.75, 1.80, centerLuma);
-    float toneScale = exp2(clamp(toneGainLog * hiProt, -0.75, 0.75));
-    vec3 tonedBase = localBase * toneScale;
+    // Macro local light-vs-shadow contrast + gentle GI fill in unoccluded shadows
+    float openShadowMask = smoothstep(-4.2, -1.2, -centerLog) * contactAO * (1.0 - smoothstep(0.45, 1.10, centerLuma));
+    float toneGainLog = localDiff * (0.42 * toneStrength)
+                      + (shadowFill * toneStrength) * openShadowMask;
 
-    if (pc.style == 2u && !sky) {
-        float tHi = smoothstep(0.10, 0.75, centerLuma);
-        tonedBase *= mix(shadowTint, highTint, tHi);
+    // Filmic midtone S-curve around local ambient log luminance
+    float midContrast = clamp(centerLog - localLogLuma, -1.6, 1.6);
+    toneGainLog += midContrast * filmicContrast * autoMask;
+
+    float hiProt = 1.0 - 0.55 * smoothstep(0.75, 1.85, centerLuma);
+    float toneScale = exp2(clamp(toneGainLog * hiProt, -1.15, 1.15));
+
+    // Crevice contact ambient occlusion (deepens block joints, foliage interiors, under overhangs)
+    float aoFactor = sky ? 1.0 : mix(1.0, contactAO, clamp(aoStrength * toneStrength, 0.0, 1.0));
+    vec3 relitBase = localBase * toneScale * aoFactor;
+
+    // 3. Depth-Normal Directional Material Lighting & Grazing Fresnel Specular Sheen
+    if (!sky && sheenStrength > 0.001) {
+        vec3 viewN = reconstructDepthNormal(uv, invRes, zCenter);
+        float ndotv = clamp(viewN.z, 0.0, 1.0);
+        float fresnel = pow(1.0 - ndotv, 3.0);
+
+        // Directional key-light relief (top-right key vs cool underside bounce)
+        vec3 keyDir = normalize(vec3(0.42, 0.78, 0.46));
+        float keyAlign = dot(viewN, keyDir);
+        float dirRelief = 1.0 + keyAlign * (0.14 * toneStrength);
+        relitBase *= clamp(dirRelief, 0.80, 1.24);
+
+        // Grazing dielectric specular sheen weighted by local illumination & AO
+        float litMask = smoothstep(0.04, 0.55, centerLuma) * contactAO;
+        vec3 sheenCol = mix(vec3(1.0), highTint, 0.65);
+        relitBase += sheenCol * (fresnel * sheenStrength * litMask * autoMask * 0.28);
     }
 
-    // 3. Organic Skin/Auto-Mask modulation for Local Structure Reconstruction
+    // 4. Warm-highlight / cool-shadow split lighting tint (skips sky)
+    if (!sky) {
+        float tHi = smoothstep(0.06, 0.65, centerLuma);
+        vec3 splitTint = mix(shadowTint, highTint, tHi);
+        relitBase *= mix(vec3(1.0), splitTint, clamp(0.70 * autoMask, 0.0, 1.0));
+    }
+
+    // 5. Controlled micro-structure reconstruction (detail-only anti-ringing so relighting is NEVER clamped away!)
     float structStrength = clamp(pc.localStructureStrength, 0.0, 2.0) * structStyleScale * autoMask;
     if (pc.useAutoMask != 0u) {
         float skinMask = computeOrganicSkinMask(centerLin);
         float skinFactor = (pc.skinStructureStrength < -0.5)
-            ? 0.45  // Auto: keep organic/skin surfaces smooth without crispy ringing
+            ? 0.35
             : clamp(pc.skinStructureStrength, 0.0, 2.0);
         structStrength *= mix(1.0, skinFactor, skinMask);
     }
     if (sky) {
-        structStrength *= 0.10;
+        structStrength *= 0.08;
+    }
+    // Suppress structure boost on high-contrast silhouette edges so AA stays silky smooth
+    float edgeDamp = 1.0 - 0.65 * smoothstep(0.18, 0.60, maxDeltaLuma);
+    float detailBoost = structStrength * 0.55 * edgeDamp;
+    vec3 detailAdded = clamp(detail * detailBoost, vec3(-0.08), vec3(0.08));
+    vec3 filtered = max(relitBase + detail + detailAdded, vec3(0.0));
+
+    // 6. Subtle depth-based atmospheric perspective (adds depth separation on distant terrain)
+    if (!sky && hazeStrength > 0.001) {
+        float distNorm = smoothstep(pc.farPlane * 0.18, pc.farPlane * 0.92, zCenter);
+        float hazeAmt = distNorm * hazeStrength * autoMask;
+        float envLuma = clamp(exp2(localLogLuma), 0.15, 1.25);
+        filtered = mix(filtered, hazeColor * envLuma, clamp(hazeAmt, 0.0, 0.25));
     }
 
-    // Anti-halo soft clamp on high-frequency detail synthesis
-    float structGain = 1.0 + structStrength * 0.72;
-    vec3 filtered = tonedBase + detail * structGain;
-
-    // Neighborhood overshoot clamp in linear space (relative to toned neighborhood bounds)
-    vec3 deltaBase = tonedBase - localBase;
-    vec3 softMin = max(vec3(0.0), (nbMin + deltaBase) - vec3(0.03 + 0.04 * structStrength) * max(nbMax - nbMin, vec3(0.02)));
-    vec3 softMax = (nbMax + deltaBase) + vec3(0.03 + 0.04 * structStrength) * max(nbMax - nbMin, vec3(0.02));
-    filtered = clamp(filtered, softMin, softMax);
-
-    // Subtle style saturation refinement (luma-preserving)
+    // 7. Luma-preserving vibrance refinement + soft highlight shoulder
     if (abs(satBoost - 1.0) > 1e-3 && !sky) {
         float fl = luminance(filtered);
         filtered = max(mix(vec3(fl), filtered, mix(1.0, satBoost, autoMask)), vec3(0.0));
     }
+    if (pc.inputIsHdr == 0u) {
+        filtered = softShoulder(filtered);
+    }
 
-    // 4. Master Intensity blend (0..1 lerp, >1..2 controlled amplification)
+    // 8. Master Intensity blend (0..1 lerp, >1..2 controlled amplification)
     vec3 finalLin;
     if (pc.intensity <= 1.0) {
         finalLin = mix(centerLin, filtered, clamp(pc.intensity, 0.0, 1.0));

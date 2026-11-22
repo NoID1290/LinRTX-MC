@@ -75,78 +75,90 @@ void main() {
     bool sky = isSkyDepth(rawDepth);
     float zCurr = sky ? pc.farPlane : linearizeDepth(rawDepth);
 
-    // Multi-scale joint-bilateral local log-luminance & structural variance estimation
-    const vec2 kOffsetsSmall[4] = vec2[](
-        vec2(-1.5,  0.0), vec2( 1.5,  0.0),
-        vec2( 0.0, -1.5), vec2( 0.0,  1.5)
+    // Resolution-proportional multi-scale radius so macro illumination & contact AO
+    // scale consistently from 720p up to 4K instead of shrinking to a few pixels.
+    float resScale = max(float(pc.workHeight) / 1080.0, 0.65);
+
+    // 1. Wide multi-scale illumination field (2px .. 56px scaled) + screen-space depth contact AO.
+    const vec2 kDirs[8] = vec2[](
+        vec2( 1.000,  0.000), vec2(-1.000,  0.000),
+        vec2( 0.000,  1.000), vec2( 0.000, -1.000),
+        vec2( 0.707,  0.707), vec2(-0.707,  0.707),
+        vec2( 0.707, -0.707), vec2(-0.707, -0.707)
     );
-    const vec2 kOffsetsWide[8] = vec2[](
-        vec2(-2.0, -2.0), vec2( 2.0, -2.0),
-        vec2(-2.0,  2.0), vec2( 2.0,  2.0),
-        vec2(-5.5,  0.0), vec2( 5.5,  0.0),
-        vec2( 0.0, -5.5), vec2( 0.0,  5.5)
-    );
 
-    float sumLog = centerLog;
-    float sumWeight = 1.0;
-    float energyAccum = 0.0;
-    float energyWeight = 0.0;
+    // Estimate local tangent depth slope so slanted surfaces (floors/walls) do not self-occlude.
+    float zR = linearizeDepth(textureLod(uDepthTex, clamp(uv + vec2(invRes.x, 0.0), 0.0, 1.0), 0.0).r);
+    float zL = linearizeDepth(textureLod(uDepthTex, clamp(uv - vec2(invRes.x, 0.0), 0.0, 1.0), 0.0).r);
+    float zD = linearizeDepth(textureLod(uDepthTex, clamp(uv + vec2(0.0, invRes.y), 0.0, 1.0), 0.0).r);
+    float zU = linearizeDepth(textureLod(uDepthTex, clamp(uv - vec2(0.0, invRes.y), 0.0, 1.0), 0.0).r);
+    float dzdx = (abs(zR - zCurr) < abs(zCurr - zL)) ? (zR - zCurr) : (zCurr - zL);
+    float dzdy = (abs(zD - zCurr) < abs(zCurr - zU)) ? (zD - zCurr) : (zCurr - zU);
 
-    for (int i = 0; i < 4; ++i) {
-        vec2 suv = clamp(uv + kOffsetsSmall[i] * invRes, 0.0, 1.0);
-        float sLuma = luminance(readLinear(suv));
-        float sLog = log2(max(sLuma, 1e-4));
-        float sRawD = textureLod(uDepthTex, suv, 0.0).r;
-        float sZ = isSkyDepth(sRawD) ? pc.farPlane : linearizeDepth(sRawD);
+    float sumLog = centerLog * 1.25;
+    float sumWeight = 1.25;
+    float aoAccum = 0.0;
+    float aoSamples = 0.0;
 
-        float relDz = abs(sZ - zCurr) / max(zCurr, 0.25);
-        float wZ = exp(-relDz * 6.0);
-        float dLog = abs(sLog - centerLog);
-        float wL = exp(-dLog * 0.75);
-        float w = wZ * wL * 0.85;
+    // Ring 1 (near contact AO + local lighting, ~5px) and Ring 2 (mid-scale bounce, ~18px)
+    const float kRadiiFast[2] = float[](5.0, 18.0);
+    const float kRadiiFull[3] = float[](5.0, 18.0, 48.0);
+    int ringCount = (pc.presetMode == 2u) ? 2 : 3;
 
-        sumLog += sLog * w;
-        sumWeight += w;
-        energyAccum += dLog * wZ;
-        energyWeight += wZ;
-    }
+    for (int r = 0; r < ringCount; ++r) {
+        float radPx = ((pc.presetMode == 2u) ? kRadiiFast[r] : kRadiiFull[r]) * resScale;
+        float ringLogW = (r == 0) ? 0.90 : ((r == 1) ? 0.75 : 0.60);
+        float aoRange = max(0.35, zCurr * (0.045 + 0.04 * float(r)));
 
-    if (pc.presetMode != 2u) {
-        for (int i = 0; i < 8; ++i) {
-            vec2 suv = clamp(uv + kOffsetsWide[i] * invRes, 0.0, 1.0);
+        for (int d = 0; d < 8; ++d) {
+            if (r == 2 && (d & 1) == 1) continue; // 4 wide cardinal/diagonal probes on outer ring
+            vec2 offsetPx = kDirs[d] * radPx;
+            vec2 suv = clamp(uv + offsetPx * invRes, 0.0, 1.0);
+
+            float sRawD = textureLod(uDepthTex, suv, 0.0).r;
+            bool sSky = isSkyDepth(sRawD);
+            float sZ = sSky ? pc.farPlane : linearizeDepth(sRawD);
+
+            // Wide edge-preserving illumination average (stays on similar depth surfaces)
             float sLuma = luminance(readLinear(suv));
             float sLog = log2(max(sLuma, 1e-4));
-            float sRawD = textureLod(uDepthTex, suv, 0.0).r;
-            float sZ = isSkyDepth(sRawD) ? pc.farPlane : linearizeDepth(sRawD);
-
-            float relDz = abs(sZ - zCurr) / max(zCurr, 0.25);
-            float wZ = exp(-relDz * 4.5);
-            float dLog = abs(sLog - centerLog);
-            float wL = exp(-dLog * 0.55);
-            float scaleW = (i < 4) ? 0.60 : 0.40;
-            float w = wZ * wL * scaleW;
-
+            float relDz = abs(sZ - zCurr) / max(zCurr, 0.4);
+            float wZ = exp(-relDz * (r == 2 ? 2.0 : 3.5));
+            float w = wZ * ringLogW;
             sumLog += sLog * w;
             sumWeight += w;
-            energyAccum += dLog * wZ * 0.5;
-            energyWeight += wZ * 0.5;
+
+            // Screen-space contact ambient occlusion: neighbor closer than tangent plane occludes center
+            if (!sky && !sSky && r < 2) {
+                float expectedZ = zCurr + dzdx * offsetPx.x + dzdy * offsetPx.y;
+                float dz = expectedZ - sZ; // positive => neighbor is closer to camera (occluder)
+                float bias = max(0.035, zCurr * 0.008);
+                if (dz > bias && dz < aoRange) {
+                    float falloff = 1.0 - smoothstep(aoRange * 0.25, aoRange, dz);
+                    float strength = smoothstep(bias, bias + aoRange * 0.30, dz) * falloff;
+                    aoAccum += strength;
+                }
+                aoSamples += 1.0;
+            }
         }
     }
 
     float localLogLuma = sumLog / max(sumWeight, 1e-4);
-    float localEnergy = clamp(energyAccum / max(energyWeight, 1e-4), 0.0, 4.0);
+    float contactAO = (aoSamples > 0.5 && !sky)
+        ? clamp(1.0 - (aoAccum / aoSamples) * 1.45, 0.22, 1.0)
+        : 1.0;
 
-    // Heuristic auto-mask: attenuate neural over-processing on sky & high-motion disocclusions
+    // 2. Heuristic auto-mask: attenuate processing on sky & fast disocclusions
     vec2 mv = textureLod(uMvecTex, uv, 0.0).rg;
     float mvMag = length(mv * vec2(float(pc.workWidth), float(pc.workHeight)));
     float autoMask = 1.0;
     if (pc.useAutoMask != 0u) {
-        float skyMask = sky ? 0.18 : 1.0;
-        float motionMask = 1.0 - 0.30 * smoothstep(4.0, 28.0, mvMag);
+        float skyMask = sky ? 0.20 : 1.0;
+        float motionMask = 1.0 - 0.25 * smoothstep(6.0, 32.0, mvMag);
         autoMask = skyMask * motionMask;
     }
 
-    // Temporal stabilization via backward motion vectors
+    // 3. Temporal stabilization via backward motion vectors (eliminates AO/relight flicker)
     vec2 prevUv = uv + mv;
     bool validHist = (pc.resetHistory == 0u) &&
                      prevUv.x >= 0.0 && prevUv.x <= 1.0 &&
@@ -155,16 +167,16 @@ void main() {
     if (validHist) {
         vec4 prev = textureLod(uPrevStatsTex, prevUv, 0.0);
         float zPrev = prev.a;
-        float relDz = abs(zPrev - zCurr) / max(zCurr, 0.2);
-        if (zPrev > 0.0 && !isnan(prev.r) && !isinf(prev.r) && relDz < 0.18) {
-            float alpha = clamp(pc.temporalBlend, 0.0, 0.92) * (1.0 - 0.5 * smoothstep(2.0, 20.0, mvMag));
-            localLogLuma = mix(localLogLuma, clamp(prev.r, localLogLuma - 1.25, localLogLuma + 1.25), alpha);
-            localEnergy = mix(localEnergy, clamp(prev.g, 0.0, 4.0), alpha * 0.85);
+        float relDz = abs(zPrev - zCurr) / max(zCurr, 0.25);
+        if (zPrev > 0.0 && !isnan(prev.r) && !isinf(prev.r) && relDz < 0.16) {
+            float alpha = clamp(pc.temporalBlend, 0.0, 0.90) * (1.0 - 0.55 * smoothstep(2.0, 20.0, mvMag));
+            localLogLuma = mix(localLogLuma, clamp(prev.r, localLogLuma - 1.5, localLogLuma + 1.5), alpha);
+            contactAO = mix(contactAO, clamp(prev.g, 0.22, 1.0), alpha * 0.88);
             autoMask = mix(autoMask, clamp(prev.b, 0.0, 1.0), alpha * 0.75);
         } else if (pc.useAutoMask != 0u) {
-            autoMask *= 0.72; // Disocclusion confidence damping
+            autoMask *= 0.78;
         }
     }
 
-    imageStore(uOutStatsImg, ivec2(px), vec4(localLogLuma, localEnergy, autoMask, zCurr));
+    imageStore(uOutStatsImg, ivec2(px), vec4(localLogLuma, contactAO, autoMask, zCurr));
 }

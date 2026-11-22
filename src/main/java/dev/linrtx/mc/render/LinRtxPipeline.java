@@ -260,8 +260,8 @@ public final class LinRtxPipeline {
         currentRenderH = cachedRenderH;
 
         if (cfg.autoMipBias && cachedRenderW < displayW) {
-            // Official DLSS LOD bias formula: log2(renderW / displayW) - 1.0
-            currentMipBias = (float) (Math.log((double) cachedRenderW / (double) displayW) / Math.log(2.0) - 1.0);
+            // Resolution-matched negative LOD bias without extra -1.0 oversharpening on pixel-art textures
+            currentMipBias = (float) Math.max(-2.0, Math.log((double) cachedRenderW / (double) displayW) / Math.log(2.0));
         } else {
             currentMipBias = 0.0f;
         }
@@ -364,7 +364,7 @@ public final class LinRtxPipeline {
         Matrix4f projMat,
         CameraRenderState camState
     ) {
-        if (IrisCompat.isRenderingShadowPass()) {
+        if (!activeWorldFrame || IrisCompat.isRenderingShadowPass()) {
             return;
         }
         // Only track perspective main world camera
@@ -699,10 +699,16 @@ public final class LinRtxPipeline {
         int inputFmt = colorIsHdrThisFrame ? GL30.GL_RGBA16F : GL11.GL_RGBA8;
         int stage2Fmt = resolveStage2GlFormat(cfg, colorIsHdrThisFrame);
 
-        boolean needDlss = cfg.dlssMode != DlssMode.OFF;
+        // If Pre-Tonemap DLSS-RR already reconstructed at full 1:1 display resolution (DLAA),
+        // skip redundant Stage-1 DLSS-SR to avoid double-sharpening and fake-jitter AA loss.
+        boolean skipStage1Upscale = preTonemapRrUsedThisFrame
+            && activeRenderW == activeDisplayW
+            && activeRenderH == activeDisplayH;
+        boolean needDlss = (cfg.dlssMode != DlssMode.OFF) && !skipStage1Upscale;
         boolean needStage1Denoise = (cfg.denoiseMode != DenoiseMode.OFF) && !preTonemapDenoisedThisFrame;
         boolean needNeural = cfg.neuralMode != NeuralEngineMode.OFF;
-        boolean needStage1 = needDlss || needStage1Denoise || needNeural;
+        boolean needStage1Sharpen = skipStage1Upscale && cfg.sharpness > 0.001f;
+        boolean needStage1 = needDlss || needStage1Denoise || needNeural || needStage1Sharpen;
         boolean needFg = cfg.fgMode != FrameGenMode.OFF;
         boolean needMvPass = (needStage1 || needFg) && worldColorGl > 0 && worldDepthGl > 0;
 
@@ -732,7 +738,7 @@ public final class LinRtxPipeline {
 
         boolean dlssEvaluatedOk = false;
         if (needStage1 && nativeReady && depthMvecReadyThisFrame && fullResColorGl > 0) {
-            MemorySegment seg = populateFrameSegment(cfg, true, needStage1Denoise);
+            MemorySegment seg = populateFrameSegment(cfg, true, needStage1Denoise, skipStage1Upscale);
             int rc = LinRtxNative.evaluateDlss(seg);
             statusSnapshot = LinRtxNative.getStatus();
             if (rc >= 0) {
@@ -900,6 +906,15 @@ public final class LinRtxPipeline {
     }
 
     private MemorySegment populateFrameSegment(LinRtxConfig cfg, boolean consumeResetFlag, boolean allowStage1Denoise) {
+        return populateFrameSegment(cfg, consumeResetFlag, allowStage1Denoise, false);
+    }
+
+    private MemorySegment populateFrameSegment(
+        LinRtxConfig cfg,
+        boolean consumeResetFlag,
+        boolean allowStage1Denoise,
+        boolean skipStage1Upscale
+    ) {
         MemorySegment seg = LinRtxNative.scratchFrameConfig();
         boolean reset = consumeResetFlag
             ? cameraTracker.checkAndClearReset()
@@ -908,20 +923,24 @@ public final class LinRtxPipeline {
         int hudlessTex = cfg.hudlessSplit
             ? (hudlessCapturedInUpscaled ? targets.outUpscaledTex() : targets.hudlessInTex())
             : 0;
+        // Pre-Tonemap DLSS-RR already un-jittered colortex5 -> colortex0; passing non-zero jitter
+        // into Stage-1 DLSS-SR on an already-unjittered color buffer breaks static-camera AA.
+        boolean zeroStage1Jitter = activeF1HideGui || preTonemapRrUsedThisFrame;
 
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 4, activeRenderW);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 8, activeRenderH);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 12, activeDisplayW);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 16, activeDisplayH);
-        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 20, cfg.dlssMode.nativeId);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 20,
+            skipStage1Upscale ? DlssMode.OFF.nativeId : cfg.dlssMode.nativeId);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 24, cfg.dlssPreset.nativeId);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 28, cfg.fgMode.nativeId);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 32, cfg.hdrEngine.nativeId);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 36, cfg.hdrOutputMode.nativeId);
         seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 40, cfg.presentBackend.nativeId);
         seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 44, cfg.sharpness);
-        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 48, activeF1HideGui ? 0.0f : jitter.currentX());
-        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 52, activeF1HideGui ? 0.0f : jitter.currentY());
+        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 48, zeroStage1Jitter ? 0.0f : jitter.currentX());
+        seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 52, zeroStage1Jitter ? 0.0f : jitter.currentY());
         seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 56, (float) activeRenderW);
         seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 60, (float) activeRenderH);
         seg.set(java.lang.foreign.ValueLayout.JAVA_FLOAT, 64, lastFrameTimeMs);

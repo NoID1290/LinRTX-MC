@@ -319,65 +319,79 @@ bool DlssRrEngine::evaluate(VkNgxContext& ctx,
     }
 
     const bool hasExpAlbedo = (explicitDiffuseAlbedo && explicitDiffuseAlbedo->valid());
+    const bool hasExpSpec = (explicitSpecularAlbedo && explicitSpecularAlbedo->valid());
     const bool hasExpNormals = (explicitNormals && explicitNormals->valid());
-    if (hasExpAlbedo) barrierReadOnly(ctx, cmd, *explicitDiffuseAlbedo);
-    if (hasExpNormals) barrierReadOnly(ctx, cmd, *explicitNormals);
+    const bool hasExpRough = (explicitRoughness && explicitRoughness->valid());
+    const bool useDirectExplicitGuides =
+        hasExpAlbedo && hasExpSpec && hasExpNormals && hasExpRough &&
+        (frame.gbufferNormalsAreWorld == 0);
 
-    // Always run guide synthesis/normalization into unpacked view-space G-buffers so any mix of
-    // explicit (Camellia/Iris) and fallback (depth-derived) guides is 100% consistent.
-    barrierWriteGeneral(ctx, cmd, synthAlbedo_);
-    barrierWriteGeneral(ctx, cmd, synthSpecular_);
-    barrierWriteGeneral(ctx, cmd, synthNormals_);
-    barrierWriteGeneral(ctx, cmd, synthRoughness_);
+    SharedTexture* usedDiffuse = nullptr;
+    SharedTexture* usedSpecular = nullptr;
+    SharedTexture* usedNormals = nullptr;
+    SharedTexture* usedRoughness = nullptr;
 
-    const float aspect = (frame.cameraAspect > 0.05f)
-                             ? frame.cameraAspect
-                             : (static_cast<float>(frame.renderWidth) / std::max(1.0f, static_cast<float>(frame.renderHeight)));
-    const float fov = (frame.cameraFovRadians > 0.05f) ? frame.cameraFovRadians : 1.22173f;
-    const float tanHalf = std::tan(fov * 0.5f);
-    const float projM00 = std::abs(frame.viewToClip[0]);
-    const float projM11 = std::abs(frame.viewToClip[5]);
+    if (useDirectExplicitGuides) {
+        usedDiffuse = explicitDiffuseAlbedo;
+        usedSpecular = explicitSpecularAlbedo;
+        usedNormals = explicitNormals;
+        usedRoughness = explicitRoughness;
+    } else {
+        if (hasExpAlbedo) barrierReadOnly(ctx, cmd, *explicitDiffuseAlbedo);
+        if (hasExpNormals) barrierReadOnly(ctx, cmd, *explicitNormals);
 
-    GuideSynthPush gpc{};
-    gpc.width = frame.renderWidth;
-    gpc.height = frame.renderHeight;
-    gpc.hasExplicitAlbedo = hasExpAlbedo ? 1u : 0u;
-    gpc.hasExplicitNormals = hasExpNormals ? 1u : 0u;
-    gpc.normalsAreWorld = frame.gbufferNormalsAreWorld ? 1u : 0u;
-    gpc.normalsPacked01 = (hasExpNormals && isUnorm8Format(frame.normalsFormatGl)) ? 1u : 0u;
-    gpc.reverseZ = frame.depthInverted ? 1u : 0u;
-    gpc.inputIsSrgb = (frame.colorIsHdrInput == 0) ? 1u : 0u;
-    gpc.nearPlane = (frame.cameraNear > 0.0f) ? frame.cameraNear : 0.05f;
-    gpc.farPlane = (frame.cameraFar > gpc.nearPlane) ? frame.cameraFar : 256.0f;
-    gpc.invProjX = (projM00 > 1e-5f) ? (1.0f / projM00) : (aspect * tanHalf);
-    gpc.invProjY = (projM11 > 1e-5f) ? (1.0f / projM11) : tanHalf;
-    gpc.viewRow0[0] = frame.cameraRight[0]; gpc.viewRow0[1] = frame.cameraRight[1]; gpc.viewRow0[2] = frame.cameraRight[2];
-    gpc.viewRow1[0] = frame.cameraUp[0];    gpc.viewRow1[1] = frame.cameraUp[1];    gpc.viewRow1[2] = frame.cameraUp[2];
-    gpc.viewRow2[0] = -frame.cameraFwd[0];  gpc.viewRow2[1] = -frame.cameraFwd[1];  gpc.viewRow2[2] = -frame.cameraFwd[2];
+        // Run guide synthesis/normalization into unpacked view-space G-buffers so any mix of
+        // explicit (Camellia/Iris) and fallback (depth-derived) guides is 100% consistent.
+        barrierWriteGeneral(ctx, cmd, synthAlbedo_);
+        barrierWriteGeneral(ctx, cmd, synthSpecular_);
+        barrierWriteGeneral(ctx, cmd, synthNormals_);
+        barrierWriteGeneral(ctx, cmd, synthRoughness_);
 
-    const SharedTexture* gSamplers[4] = {
-        &colorIn,
-        &depthIn,
-        hasExpAlbedo ? explicitDiffuseAlbedo : &dummyGuideTex_,
-        hasExpNormals ? explicitNormals : &dummyGuideTex_,
-    };
-    const SharedTexture* gStorages[4] = {
-        &synthAlbedo_,
-        &synthSpecular_,
-        &synthNormals_,
-        &synthRoughness_,
-    };
-    guideSynthPass_.dispatchMulti(cmd, ctx.device, gSamplers, 4u, gStorages, 4u,
-                                  frame.renderWidth, frame.renderHeight, &gpc, sizeof(gpc));
+        const float aspect = (frame.cameraAspect > 0.05f)
+                                 ? frame.cameraAspect
+                                 : (static_cast<float>(frame.renderWidth) / std::max(1.0f, static_cast<float>(frame.renderHeight)));
+        const float fov = (frame.cameraFovRadians > 0.05f) ? frame.cameraFovRadians : 1.22173f;
+        const float tanHalf = std::tan(fov * 0.5f);
+        const float projM00 = std::abs(frame.viewToClip[0]);
+        const float projM11 = std::abs(frame.viewToClip[5]);
 
-    SharedTexture* usedDiffuse = &synthAlbedo_;
-    SharedTexture* usedSpecular = (explicitSpecularAlbedo && explicitSpecularAlbedo->valid())
-                                      ? explicitSpecularAlbedo
-                                      : &synthSpecular_;
-    SharedTexture* usedNormals = &synthNormals_;
-    SharedTexture* usedRoughness = (explicitRoughness && explicitRoughness->valid())
-                                       ? explicitRoughness
-                                       : &synthRoughness_;
+        GuideSynthPush gpc{};
+        gpc.width = frame.renderWidth;
+        gpc.height = frame.renderHeight;
+        gpc.hasExplicitAlbedo = hasExpAlbedo ? 1u : 0u;
+        gpc.hasExplicitNormals = hasExpNormals ? 1u : 0u;
+        gpc.normalsAreWorld = frame.gbufferNormalsAreWorld ? 1u : 0u;
+        gpc.normalsPacked01 = (hasExpNormals && isUnorm8Format(frame.normalsFormatGl)) ? 1u : 0u;
+        gpc.reverseZ = frame.depthInverted ? 1u : 0u;
+        gpc.inputIsSrgb = (frame.colorIsHdrInput == 0) ? 1u : 0u;
+        gpc.nearPlane = (frame.cameraNear > 0.0f) ? frame.cameraNear : 0.05f;
+        gpc.farPlane = (frame.cameraFar > gpc.nearPlane) ? frame.cameraFar : 256.0f;
+        gpc.invProjX = (projM00 > 1e-5f) ? (1.0f / projM00) : (aspect * tanHalf);
+        gpc.invProjY = (projM11 > 1e-5f) ? (1.0f / projM11) : tanHalf;
+        gpc.viewRow0[0] = frame.cameraRight[0]; gpc.viewRow0[1] = frame.cameraRight[1]; gpc.viewRow0[2] = frame.cameraRight[2];
+        gpc.viewRow1[0] = frame.cameraUp[0];    gpc.viewRow1[1] = frame.cameraUp[1];    gpc.viewRow1[2] = frame.cameraUp[2];
+        gpc.viewRow2[0] = -frame.cameraFwd[0];  gpc.viewRow2[1] = -frame.cameraFwd[1];  gpc.viewRow2[2] = -frame.cameraFwd[2];
+
+        const SharedTexture* gSamplers[4] = {
+            &colorIn,
+            &depthIn,
+            hasExpAlbedo ? explicitDiffuseAlbedo : &dummyGuideTex_,
+            hasExpNormals ? explicitNormals : &dummyGuideTex_,
+        };
+        const SharedTexture* gStorages[4] = {
+            &synthAlbedo_,
+            &synthSpecular_,
+            &synthNormals_,
+            &synthRoughness_,
+        };
+        guideSynthPass_.dispatchMulti(cmd, ctx.device, gSamplers, 4u, gStorages, 4u,
+                                      frame.renderWidth, frame.renderHeight, &gpc, sizeof(gpc));
+
+        usedDiffuse = &synthAlbedo_;
+        usedSpecular = hasExpSpec ? explicitSpecularAlbedo : &synthSpecular_;
+        usedNormals = &synthNormals_;
+        usedRoughness = hasExpRough ? explicitRoughness : &synthRoughness_;
+    }
 
     barrierReadOnly(ctx, cmd, *usedDiffuse);
     barrierReadOnly(ctx, cmd, *usedSpecular);

@@ -3,12 +3,13 @@ package dev.linrtx.mc.render;
 import org.joml.Matrix4f;
 
 /**
- * Low-discrepancy Halton (base 2, base 3) subpixel jitter generator for DLSS 4.5.
+ * Low-discrepancy Halton (base 2, base 3) subpixel jitter generator for DLSS 4.5 / DLSS-RR.
  *
  * <p>Coordinates follow Vulkan top-left pixel convention in [-0.5, +0.5).
- * Projection jitter left-multiplies Translation(-2*jx/W, +2*jy/H, 0) onto MC's
- * OpenGL clip matrix so the world shifts (-jx, +jy_gl) and sample centers probe
- * (+jx, +jy) in Vulkan top-left space, matching DLSS InJitterOffset = (jx, jy).
+ * Projection jitter left-multiplies Translation(+2*jx/W, -2*jy/H, 0) onto MC's
+ * OpenGL clip matrix so rendered geometry shifts (+jx, -jy_gl) = (+jx, +jy) in
+ * Vulkan top-left pixel space, matching NVIDIA NGX InJitterOffset = (jx, jy)
+ * for both DLSS-SR and DLSS-RR.
  */
 public final class HaltonJitter {
     private int frameIndex = 0;
@@ -31,11 +32,11 @@ public final class HaltonJitter {
 
     public static int computeCycleLength(int renderW, int displayW) {
         if (renderW <= 0 || displayW <= 0 || renderW >= displayW) {
-            return 8;
+            return 16;
         }
         double scale = (double) displayW / (double) renderW;
         int len = (int) Math.ceil(8.0 * scale * scale);
-        return Math.max(8, Math.min(64, len));
+        return Math.max(16, Math.min(72, len));
     }
 
     public void reset() {
@@ -61,14 +62,31 @@ public final class HaltonJitter {
     }
 
     /**
+     * OpenGL NDC X translation applied to the projection matrix for a Vulkan top-left
+     * pixel jitter {@code jitterX}: shifts geometry by {@code +jitterX} pixels right.
+     */
+    public static float ndcOffsetX(float jitterX, int renderW) {
+        return (renderW > 0) ? (2.0f * jitterX / (float) renderW) : 0.0f;
+    }
+
+    /**
+     * OpenGL NDC Y translation applied to the projection matrix for a Vulkan top-left
+     * pixel jitter {@code jitterY}: shifts geometry by {@code +jitterY} pixels down
+     * (negative in GL Y-up NDC, positive in Vulkan top-left pixel coordinates).
+     */
+    public static float ndcOffsetY(float jitterY, int renderH) {
+        return (renderH > 0) ? (-2.0f * jitterY / (float) renderH) : 0.0f;
+    }
+
+    /**
      * Left-multiplies subpixel jitter translation into an OpenGL clip projection matrix.
      */
     public void applyProjectionJitter(Matrix4f projGl, int renderW, int renderH) {
         if (projGl == null || renderW <= 0 || renderH <= 0) {
             return;
         }
-        float tx = -2.0f * currentX / (float) renderW;
-        float ty = 2.0f * currentY / (float) renderH;
+        float tx = ndcOffsetX(currentX, renderW);
+        float ty = ndcOffsetY(currentY, renderH);
         scratchJitter.translation(tx, ty, 0.0f);
         scratchJitter.mul(projGl, projGl);
     }

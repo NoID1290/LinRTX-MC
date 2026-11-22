@@ -57,23 +57,23 @@ public final class LinRtxPresetProfile {
         new Bundle(
             "DLAA Reference + RTX HDR",
             "Native res DLAA, Transformer Preset K, 2x FG, Reference HDR",
-            DlssMode.DLAA, DlssPreset.K, 0.15f, FrameGenMode.X2, HdrEngineMode.AUTO, HdrTonePreset.TRUEHDR_REFERENCE
+            DlssMode.DLAA, DlssPreset.K, 0.0f, FrameGenMode.X2, HdrEngineMode.AUTO, HdrTonePreset.TRUEHDR_REFERENCE
         ),
         new Bundle(
             "DLSS 4.5 Balanced (Preset M)",
             "Recommended 4.5 Gen-2 Transformer + 2x FG + Cinematic HDR",
-            DlssMode.BALANCED, DlssPreset.M, 0.25f, FrameGenMode.X2, HdrEngineMode.AUTO, HdrTonePreset.CINEMATIC
+            DlssMode.BALANCED, DlssPreset.M, 0.15f, FrameGenMode.X2, HdrEngineMode.AUTO, HdrTonePreset.CINEMATIC
         ),
         new Bundle(
             "DLSS 5 Neural Cinematic (Any RTX)",
             "Balanced Preset M + DLSS 5 Neural Engine Filter (Unlocked) + 2x FG",
-            DlssMode.BALANCED, DlssPreset.M, 0.15f, FrameGenMode.X2, HdrEngineMode.AUTO, HdrTonePreset.CINEMATIC,
+            DlssMode.BALANCED, DlssPreset.M, 0.0f, FrameGenMode.X2, HdrEngineMode.AUTO, HdrTonePreset.CINEMATIC,
             DenoiseMode.OFF, RayReconstructionMode.AUTO, NeuralEngineMode.AUTO, NeuralStyle.CINEMATIC
         ),
         new Bundle(
             "Path Tracing / Camellia (DLSS-RR + SVGF)",
             "Quality 0.67x, Pre-Tonemap DLSS-RR / SVGF + F1 Accum Boost + Natural HDR",
-            DlssMode.QUALITY, DlssPreset.K, 0.15f, FrameGenMode.X2, HdrEngineMode.AUTO, HdrTonePreset.NATURAL,
+            DlssMode.QUALITY, DlssPreset.K, 0.0f, FrameGenMode.X2, HdrEngineMode.AUTO, HdrTonePreset.NATURAL,
             DenoiseMode.SVGF_ATROUS, RayReconstructionMode.AUTO
         ),
         new Bundle(
